@@ -38,7 +38,7 @@ export default function App() {
   const scrollTriggerRef = useRef<ScrollTrigger | null>(null);
   const returningRef = useRef(false);
 
-  const selectedProduct = products[index];
+  const selectedProduct = products[index] ?? products[0]!;
 
   const setBackground = useCallback((hex: string, duration: number) => {
     setBgGradient(prev => {
@@ -134,7 +134,7 @@ export default function App() {
       if (phase !== 'selector') return;
       setPhase('transitioning');
       setCursorState('default');
-      const product = products[clickedIndex];
+      const product = products[clickedIndex]!;
       setBackground(product.color, 1.3);
       experienceRef.current?.playSelectTransition(clickedIndex, () => {
         setPhase('product');

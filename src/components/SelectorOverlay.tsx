@@ -92,7 +92,7 @@ export default function SelectorOverlay({
           const rel = i - index;
           const t = computeCanTransform(rel, isMobile);
           const isSelected = i === index;
-          const name = products[i].name.toUpperCase();
+          const name = products[i]!.name.toUpperCase();
           // Approximate screen position from 3D x
           const screenX = t.x * 90; // scale factor for screen pixels
           return (

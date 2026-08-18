@@ -58,12 +58,12 @@ function lerp(a: number, b: number, t: number) {
 
 function sampleStory(progress: number) {
   const p = THREE.MathUtils.clamp(progress, 0, 1);
-  let a = STORY_KEYFRAMES[0];
-  let b = STORY_KEYFRAMES[STORY_KEYFRAMES.length - 1];
+  let a = STORY_KEYFRAMES[0]!;
+  let b = STORY_KEYFRAMES[STORY_KEYFRAMES.length - 1]!;
   for (let i = 0; i < STORY_KEYFRAMES.length - 1; i++) {
-    if (p >= STORY_KEYFRAMES[i].t && p <= STORY_KEYFRAMES[i + 1].t) {
-      a = STORY_KEYFRAMES[i];
-      b = STORY_KEYFRAMES[i + 1];
+    if (p >= STORY_KEYFRAMES[i]!.t && p <= STORY_KEYFRAMES[i + 1]!.t) {
+      a = STORY_KEYFRAMES[i]!;
+      b = STORY_KEYFRAMES[i + 1]!;
       break;
     }
   }
@@ -232,7 +232,7 @@ const Experience = forwardRef<ExperienceHandle, ExperienceProps>(function Experi
     playSelectTransition(index: number, onComplete: () => void) {
       interactionEnabled.current = false;
       modeRef.current = 'product';
-      const product = products[index];
+      const product = products[index]!;
       const dur = reducedMotion ? 0.05 : 1.15;
       const tl = gsap.timeline({ onComplete });
 
@@ -333,7 +333,7 @@ const Experience = forwardRef<ExperienceHandle, ExperienceProps>(function Experi
       }
       // Floor glow follows flavor color
       if (floorMatRef.current) {
-        const product = products[index];
+        const product = products[index]!;
         const glowColor = new THREE.Color(mixHex(product.color, '#ffffff', 0.3));
         floorMatRef.current.emissive.copy(glowColor);
         floorMatRef.current.emissiveIntensity = sample.warmth * 0.15;
@@ -364,7 +364,7 @@ const Experience = forwardRef<ExperienceHandle, ExperienceProps>(function Experi
 
     // Floor glow follows selected flavor
     if (floorMatRef.current) {
-      const product = products[centerIndex] || products[0];
+      const product = products[centerIndex] || products[0]!;
       const targetEmissive = new THREE.Color(mixHex(product.color, '#ffffff', 0.2));
       floorMatRef.current.emissive.lerp(targetEmissive, 0.05);
       floorMatRef.current.emissiveIntensity = THREE.MathUtils.lerp(
