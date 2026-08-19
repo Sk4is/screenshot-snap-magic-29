@@ -1,329 +1,316 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
 import gsap from 'gsap';
-import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import Lenis from 'lenis';
-import type { ExperienceHandle } from '@/scenes/Experience';
-import Experience from '@/scenes/Experience';
+import Experience, { darknessAt } from '@/scenes/Experience';
 import Navbar from '@/components/Navbar';
 import Loader from '@/components/Loader';
 import CustomCursor from '@/components/CustomCursor';
-import SelectorOverlay from '@/components/SelectorOverlay';
+import CarouselOverlay from '@/components/CarouselOverlay';
 import StoryOverlay, { type StoryOverlayHandle } from '@/components/StoryOverlay';
-import { products } from '@/data/products';
-import { mixHex } from '@/utils/color';
+import HeroType, { type HeroTypeHandle } from '@/components/HeroType';
+import ProductDetails from '@/components/ProductDetails';
+import { products, DEFAULT_INDEX } from '@/data/products';
 import { useResponsive } from '@/hooks/useResponsive';
 import { usePrefersReducedMotion } from '@/hooks/usePrefersReducedMotion';
+import { stage, clamp01, range, smoothstep } from '@/lib/stage';
 
-type Phase = 'loading' | 'selector' | 'transitioning' | 'product' | 'returning';
+type Mode = 'loading' | 'carousel' | 'selecting' | 'story' | 'returning';
 type CursorState = 'default' | 'view' | 'drag' | 'cta';
 
-gsap.registerPlugin(ScrollTrigger);
+/** length of the pinned cinematic timeline, in viewport heights */
+const CINE_VH = 7;
 
-export default function App() {
+export default function SkyyFizzExperience() {
   const { isMobile, isTouch } = useResponsive();
   const reducedMotion = usePrefersReducedMotion();
 
-  const [phase, setPhase] = useState<Phase>('loading');
-  const [index, setIndex] = useState(0);
+  const [mode, setMode] = useState<Mode>('loading');
+  const [index, setIndex] = useState(DEFAULT_INDEX);
+  const [selected, setSelected] = useState(-1);
   const [cursorState, setCursorState] = useState<CursorState>('default');
-  const [navTheme, setNavTheme] = useState<'light' | 'dark'>('light');
-  const [bgGradient, setBgGradient] = useState({ color: '#f4f2ee', glow: '#f4f2ee', intensity: 0 });
 
-  const experienceRef = useRef<ExperienceHandle>(null);
+  const modeRef = useRef<Mode>('loading');
+  modeRef.current = mode;
+
   const storyRef = useRef<StoryOverlayHandle>(null);
-  const bgRef = useRef<HTMLDivElement>(null);
-  const lenisRef = useRef<Lenis | null>(null);
-  const scrollProgressRef = useRef(0);
-  const scrollTriggerRef = useRef<ScrollTrigger | null>(null);
-  const returningRef = useRef(false);
+  const heroRef = useRef<HeroTypeHandle>(null);
+  const flavorBg = useRef<HTMLDivElement>(null);
+  const darkBg = useRef<HTMLDivElement>(null);
+  const heroBg = useRef<HTMLDivElement>(null);
+  const canvasWrap = useRef<HTMLDivElement>(null);
+  const wheelAcc = useRef(0);
+  const dragging = useRef<{ id: number; x: number; start: number } | null>(null);
 
-  const selectedProduct = products[index] ?? products[0]!;
+  const activeProduct = products[selected >= 0 ? selected : index]!;
 
-  const setBackground = useCallback((hex: string, duration: number) => {
-    setBgGradient(prev => {
-      const next = { ...prev, color: hex, glow: hex, intensity: hex === '#f4f2ee' ? 0 : 1 };
-      if (bgRef.current) {
-        gsap.to(prev, {
-          color: next.color,
-          glow: next.glow,
-          intensity: next.intensity,
-          duration: duration * 0.8,
-          ease: 'power2.inOut',
-          onUpdate: () => {
-            if (bgRef.current) {
-              const p = prev;
-              bgRef.current.style.background =
-                `radial-gradient(ellipse 80% 60% at 50% 45%, ${p.glow}${Math.round(p.intensity * 99).toString(16).padStart(2, '0')} 0%, ${mixHex(p.color, '#f4f2ee', 1 - p.intensity * 0.5)} 50%, #f4f2ee 100%)`;
-            }
-          },
-        });
-      }
-      return next;
-    });
+  stage.isMobile = isMobile;
+  stage.reducedMotion = reducedMotion;
+
+  /* ---------------------------------------------------------- scroll lock */
+  const lockScroll = useCallback((lock: boolean) => {
+    document.documentElement.style.overflowY = lock ? 'hidden' : '';
+    document.body.style.overflowY = lock ? 'hidden' : '';
   }, []);
 
-  // Lenis smooth scroll
+  useEffect(() => {
+    lockScroll(mode === 'loading' || mode === 'carousel' || mode === 'selecting');
+  }, [mode, lockScroll]);
+
+  /* --------------------------------------------------------- smooth scroll */
   useEffect(() => {
     if (reducedMotion) return;
-    const lenis = new Lenis({
-      duration: 1.1,
-      easing: (t) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
-      smoothWheel: true,
-    });
-    lenisRef.current = lenis;
-    lenis.on('scroll', ScrollTrigger.update);
+    const lenis = new Lenis({ duration: 1.05, smoothWheel: true });
     let raf = 0;
-    function loop(time: number) {
+    const loop = (time: number) => {
       lenis.raf(time);
       raf = requestAnimationFrame(loop);
-    }
+    };
     raf = requestAnimationFrame(loop);
     return () => {
       cancelAnimationFrame(raf);
       lenis.destroy();
-      lenisRef.current = null;
     };
   }, [reducedMotion]);
 
-  // Update nav theme based on phase
+  /* --------------------------------------- one rAF loop = source of truth */
   useEffect(() => {
-    if (phase === 'product' || phase === 'transitioning') {
-      setNavTheme('dark');
-    } else {
-      setNavTheme('light');
-    }
-  }, [phase]);
+    let raf = 0;
+    const g = activeProduct.gradient;
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      const vh = window.innerHeight;
+      const cine = CINE_VH * vh;
+      const y = window.scrollY;
 
-  // ScrollTrigger for product story — drives both 3D can and story overlay
-  const setupProductScroll = useCallback(() => {
-    if (scrollTriggerRef.current) {
-      scrollTriggerRef.current.kill();
-      scrollTriggerRef.current = null;
-    }
-    scrollTriggerRef.current = ScrollTrigger.create({
-      trigger: '#product-scroll-container',
-      start: 'top top',
-      end: 'bottom bottom',
-      scrub: 1,
-      pin: '#product-scroll-pin',
-      pinSpacing: true,
-      onUpdate: (self) => {
-        scrollProgressRef.current = self.progress;
-        if (experienceRef.current) {
-          experienceRef.current.updateProductScroll(self.progress);
-        }
-        if (storyRef.current) {
-          storyRef.current.updateProgress(self.progress);
-        }
+      const p = stage.selected >= 0 ? clamp01(y / cine) : 0;
+      stage.story = p;
+      stage.detail = stage.selected >= 0 ? Math.max(0, (y - cine) / vh) : 0;
+
+      storyRef.current?.update(p);
+      heroRef.current?.update(p);
+
+      const dark = darknessAt(p);
+      const hero = smoothstep(range(p, 0.6, 0.8));
+      if (darkBg.current) darkBg.current.style.opacity = String(dark);
+      if (heroBg.current) heroBg.current.style.opacity = String(hero);
+      if (flavorBg.current) flavorBg.current.style.opacity = String(stage.selectT);
+      if (canvasWrap.current) {
+        // let the reader breathe: the can fades out deep in the detail pages
+        canvasWrap.current.style.opacity = String(1 - smoothstep(range(stage.detail, 1.5, 2.4)));
+      }
+      void g;
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [activeProduct]);
+
+  /* ------------------------------------------------------------ selection */
+  const selectFlavor = useCallback(
+    (i: number) => {
+      if (modeRef.current !== 'carousel') return;
+      setMode('selecting');
+      setSelected(i);
+      setIndex(i);
+      setCursorState('default');
+      stage.selected = i;
+      stage.indexTarget = i;
+      gsap.to(stage, {
+        selectT: 1,
+        duration: reducedMotion ? 0.2 : 1.35,
+        ease: 'power3.inOut',
+        onComplete: () => {
+          setMode('story');
+          window.scrollTo(0, 0);
+        },
+      });
+    },
+    [reducedMotion]
+  );
+
+  const returnToCarousel = useCallback(() => {
+    if (modeRef.current !== 'story') return;
+    setMode('returning');
+    window.scrollTo(0, 0);
+    gsap.to(stage, {
+      selectT: 0,
+      duration: reducedMotion ? 0.2 : 1.2,
+      ease: 'power3.inOut',
+      onComplete: () => {
+        stage.selected = -1;
+        setSelected(-1);
+        setMode('carousel');
       },
     });
-    ScrollTrigger.refresh();
+  }, [reducedMotion]);
+
+  /* --------------------------------------------------- carousel navigation */
+  const goTo = useCallback((next: number) => {
+    const clamped = Math.max(0, Math.min(products.length - 1, next));
+    stage.indexTarget = clamped;
+    setIndex(clamped);
   }, []);
 
-  const handleLoaderComplete = useCallback(() => {
-    setPhase('selector');
-  }, []);
-
-  const handleIndexChange = useCallback((newIndex: number) => {
-    setIndex(newIndex);
-  }, []);
-
-  const handleCanActivate = useCallback(
-    (clickedIndex: number) => {
-      if (phase !== 'selector') return;
-      setPhase('transitioning');
-      setCursorState('default');
-      const product = products[clickedIndex]!;
-      setBackground(product.color, 1.3);
-      experienceRef.current?.playSelectTransition(clickedIndex, () => {
-        setPhase('product');
-        storyRef.current?.reset();
-        // setup scroll after a tick so DOM is ready
-        setTimeout(() => {
-          setupProductScroll();
-        }, 50);
-      });
-    },
-    [phase, setBackground, setupProductScroll]
-  );
-
-  const handlePrev = useCallback(() => {
-    const target = Math.max(0, index - 1);
-    experienceRef.current?.jumpTo(target);
-  }, [index]);
-
-  const handleNext = useCallback(() => {
-    const target = Math.min(products.length - 1, index + 1);
-    experienceRef.current?.jumpTo(target);
-  }, [index]);
-
-  const handleDragState = useCallback((dragging: boolean) => {
-    setCursorState(dragging ? 'drag' : 'default');
-  }, []);
-
-  const handleCanHover = useCallback(
-    (hovering: boolean) => {
-      if (phase !== 'selector') return;
-      setCursorState((prev) => (prev === 'drag' ? prev : hovering ? 'view' : 'default'));
-    },
-    [phase]
-  );
-
-  const startReturn = useCallback(() => {
-    if (returningRef.current) return;
-    if (phase !== 'product') return;
-    returningRef.current = true;
-    setPhase('returning');
-    if (scrollTriggerRef.current) {
-      scrollTriggerRef.current.kill();
-      scrollTriggerRef.current = null;
-    }
-    setBackground('#f4f2ee', 1.2);
-    experienceRef.current?.playReturnTransition(() => {
-      returningRef.current = false;
-      setPhase('selector');
-      if (lenisRef.current) {
-        lenisRef.current.scrollTo(0, { immediate: true });
-      } else {
-        window.scrollTo(0, 0);
-      }
-      ScrollTrigger.refresh();
-    });
-  }, [phase, setBackground]);
-
-  // Return to selector when scroll reaches the end
   useEffect(() => {
-    if (phase !== 'product') return;
-    let ticking = false;
-    function checkReturn() {
-      if (ticking) return;
-      ticking = true;
-      requestAnimationFrame(() => {
-        ticking = false;
-        const progress = scrollProgressRef.current;
-        if (progress > 0.97) {
-          startReturn();
+    function onWheel(e: WheelEvent) {
+      const m = modeRef.current;
+      if (m === 'carousel') {
+        e.preventDefault();
+        wheelAcc.current += e.deltaY * (e.deltaMode === 1 ? 16 : 1);
+        if (Math.abs(wheelAcc.current) > 110) {
+          goTo(stage.indexTarget + Math.sign(wheelAcc.current));
+          wheelAcc.current = 0;
         }
-      });
+      } else if (m === 'story' && window.scrollY <= 2 && e.deltaY < -6) {
+        returnToCarousel();
+      }
     }
-    function onScroll() {
-      checkReturn();
-    }
-    window.addEventListener('scroll', onScroll, { passive: true });
-    return () => window.removeEventListener('scroll', onScroll);
-  }, [phase, startReturn]);
+    window.addEventListener('wheel', onWheel, { passive: false });
+    return () => window.removeEventListener('wheel', onWheel);
+  }, [goTo, returnToCarousel]);
 
-  const handleLogoClick = useCallback(() => {
-    if (phase === 'product' || phase === 'transitioning') {
-      startReturn();
-    } else if (phase === 'selector') {
-      experienceRef.current?.jumpTo(0);
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (modeRef.current !== 'carousel') return;
+      if (e.key === 'ArrowRight') goTo(stage.indexTarget + 1);
+      if (e.key === 'ArrowLeft') goTo(stage.indexTarget - 1);
+      if (e.key === 'Enter') selectFlavor(stage.indexTarget);
     }
-  }, [phase, startReturn]);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [goTo, selectFlavor]);
 
-  const cursorEnabled = !isTouch && !reducedMotion;
+  /* ------------------------------------------------------------- dragging */
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (modeRef.current !== 'carousel') return;
+    dragging.current = { id: e.pointerId, x: e.clientX, start: stage.indexTarget };
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+    setCursorState('drag');
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    const d = dragging.current;
+    if (!d || d.id !== e.pointerId) return;
+    stage.dragOffset = -(e.clientX - d.x) / (isMobile ? 120 : 180);
+  };
+  const endDrag = () => {
+    if (!dragging.current) return;
+    const target = Math.round(dragging.current.start + stage.dragOffset);
+    dragging.current = null;
+    stage.dragOffset = 0;
+    goTo(target);
+    setCursorState('default');
+  };
+
+  /* --------------------------------------------- touch return at page top */
+  useEffect(() => {
+    let startY = 0;
+    function ts(e: TouchEvent) {
+      startY = e.touches[0]?.clientY ?? 0;
+    }
+    function tm(e: TouchEvent) {
+      if (modeRef.current !== 'story' || window.scrollY > 2) return;
+      const dy = (e.touches[0]?.clientY ?? 0) - startY;
+      if (dy > 60) returnToCarousel();
+    }
+    window.addEventListener('touchstart', ts, { passive: true });
+    window.addEventListener('touchmove', tm, { passive: true });
+    return () => {
+      window.removeEventListener('touchstart', ts);
+      window.removeEventListener('touchmove', tm);
+    };
+  }, [returnToCarousel]);
+
+  const g = activeProduct.gradient;
+  const inStory = mode === 'story' || mode === 'returning' || mode === 'selecting';
 
   return (
-    <div className="relative w-full overflow-hidden">
-      {/* Animated background — radial gradient that reacts to selected flavor */}
+    <div className="relative w-full">
+      {/* --- environment layers (full viewport, always) --- */}
       <div
-        ref={bgRef}
         className="fixed inset-0 z-0"
         style={{
-          background: `radial-gradient(ellipse 80% 60% at 50% 45%, ${bgGradient.glow}00 0%, ${bgGradient.color} 50%, #f4f2ee 100%)`,
+          background:
+            'radial-gradient(ellipse 90% 70% at 50% 42%, #2b2f38 0%, #14161b 45%, #050506 100%)',
+        }}
+      />
+      <div
+        ref={flavorBg}
+        className="fixed inset-0 z-[1] opacity-0"
+        style={{
+          background: `radial-gradient(ellipse 85% 65% at 50% 45%, ${g.glow} 0%, ${g.mid} 42%, ${g.edge} 100%)`,
+        }}
+      />
+      <div
+        ref={darkBg}
+        className="fixed inset-0 z-[2] opacity-0"
+        style={{
+          background: `radial-gradient(ellipse 60% 55% at 50% 50%, ${g.edge} 0%, #030303 55%, #000000 100%)`,
+        }}
+      />
+      <div
+        ref={heroBg}
+        className="fixed inset-0 z-[3] opacity-0"
+        style={{
+          background: `radial-gradient(ellipse 70% 55% at 50% 48%, ${g.glow} 0%, ${g.mid} 45%, ${g.edge} 100%)`,
         }}
       />
       <div className="grain-overlay" />
 
-      {/* Persistent WebGL Canvas */}
-      <div className="fixed inset-0 z-10 h-screen w-screen">
+      {/* giant flavor typography sits behind the can */}
+      <HeroType ref={heroRef} product={activeProduct} />
+
+      {/* --- one persistent 3D world --- */}
+      <div
+        ref={canvasWrap}
+        className="fixed inset-0 z-10"
+        style={{ pointerEvents: mode === 'carousel' ? 'auto' : 'none' }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+      >
         <Canvas
-          shadows
-          dpr={[1, isMobile ? 1.2 : 1.5]}
+          camera={{ position: [0, 0.15, 8.4], fov: 42, near: 0.1, far: 60 }}
+          dpr={[1, reducedMotion ? 1.25 : 1.75]}
           gl={{ antialias: true, alpha: true }}
-          style={{ width: '100%', height: '100%' }}
-          camera={{ position: [0, 0, 8], fov: 40, near: 0.1, far: 100 }}
         >
           <Experience
-            ref={experienceRef}
-            products={products}
-            initialIndex={0}
-            isMobile={isMobile}
-            reducedMotion={reducedMotion}
-            onIndexChange={handleIndexChange}
-            onCanActivate={handleCanActivate}
-            onDragStateChange={handleDragState}
-            onCanHover={handleCanHover}
-            setBackground={setBackground}
+            onHover={(h) =>
+              setCursorState((prev) => (prev === 'drag' ? prev : h ? 'view' : 'default'))
+            }
+            onCanClick={selectFlavor}
           />
         </Canvas>
       </div>
 
-      {/* Navbar */}
-      <Navbar theme={navTheme} cartCount={0} onLogoClick={handleLogoClick} />
+      <Navbar
+        theme="dark"
+        cartCount={0}
+        onLogoClick={() => (mode === 'story' ? returnToCarousel() : goTo(DEFAULT_INDEX))}
+      />
 
-      {/* Selector overlay */}
-      <SelectorOverlay
+      <CarouselOverlay
         products={products}
         index={index}
-        visible={phase === 'selector'}
-        onPrev={handlePrev}
-        onNext={handleNext}
-        isMobile={isMobile}
+        visible={mode === 'carousel'}
+        onPrev={() => goTo(stage.indexTarget - 1)}
+        onNext={() => goTo(stage.indexTarget + 1)}
       />
 
-      {/* Product story overlay */}
-      <StoryOverlay
-        ref={storyRef}
-        product={selectedProduct}
-        visible={phase === 'product' || phase === 'returning'}
-        isMobile={isMobile}
-      />
+      <StoryOverlay ref={storyRef} product={activeProduct} active={inStory} />
 
-      {/* Back to flavors button + scroll hint during product experience */}
-      <div
-        className={`pointer-events-none fixed bottom-6 left-1/2 z-30 -translate-x-1/2 transition-opacity duration-500 ${
-          phase === 'product' ? 'opacity-100' : 'opacity-0'
-        }`}
-      >
-        <button
-          onClick={startReturn}
-          className="pointer-events-auto font-display text-[10px] font-bold tracking-[0.25em] text-white/70 transition-colors hover:text-white sm:text-xs"
-        >
-          ← BACK TO FLAVORS
-        </button>
-      </div>
-      <div
-        className={`pointer-events-none fixed bottom-6 right-6 z-30 transition-opacity duration-500 ${
-          phase === 'product' ? 'opacity-100' : 'opacity-0'
-        }`}
-      >
-        <p className="font-display text-[10px] font-semibold tracking-[0.2em] text-white/50">
-          SCROLL TO EXPLORE
-        </p>
-      </div>
+      {/* --- scroll surface: cinematic spacer, then normal detail content --- */}
+      {selected >= 0 && (
+        <>
+          <div style={{ height: `${CINE_VH * 100}vh` }} aria-hidden />
+          <ProductDetails product={activeProduct} />
+        </>
+      )}
 
-      {/* Scroll container for product story - invisible spacer that drives ScrollTrigger */}
-      <div
-        id="product-scroll-container"
-        style={{
-          position: 'relative',
-          height: phase === 'product' || phase === 'returning' ? '600vh' : '0',
-          width: '100%',
-          zIndex: 5,
-          pointerEvents: 'none',
-        }}
-      >
-        <div id="product-scroll-pin" style={{ height: '100vh', width: '100%' }} />
-      </div>
+      <CustomCursor state={cursorState} enabled={!isTouch && !reducedMotion} />
 
-      {/* Custom cursor */}
-      <CustomCursor state={cursorState} enabled={cursorEnabled} />
-
-      {/* Loader */}
-      {phase === 'loading' && (
-        <Loader onComplete={handleLoaderComplete} reducedMotion={reducedMotion} />
+      {mode === 'loading' && (
+        <Loader onComplete={() => setMode('carousel')} reducedMotion={reducedMotion} />
       )}
     </div>
   );
