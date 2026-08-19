@@ -1,449 +1,222 @@
-import {
-  forwardRef,
-  useEffect,
-  useImperativeHandle,
-  useRef,
-} from 'react';
+import { useMemo, useRef } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
-import { ContactShadows, Environment } from '@react-three/drei';
+import { Environment } from '@react-three/drei';
 import * as THREE from 'three';
-import gsap from 'gsap';
-import type { Product } from '@/data/products';
 import ProductCan from '@/components/ProductCan';
-import { computeCanTransform } from '@/utils/carouselLayout';
-import { useMousePosition } from '@/hooks/useMousePosition';
-import { mixHex } from '@/utils/color';
-
-export interface ExperienceHandle {
-  jumpTo: (index: number) => void;
-  playSelectTransition: (index: number, onComplete: () => void) => void;
-  playReturnTransition: (onComplete: () => void) => void;
-  updateProductScroll: (progress: number) => void;
-  setInteractionEnabled: (enabled: boolean) => void;
-}
+import { products } from '@/data/products';
+import { CAN_POSES, computeCanTransform } from '@/utils/carouselLayout';
+import { stage, damp, lerp, range, smoothstep } from '@/lib/stage';
 
 interface ExperienceProps {
-  products: Product[];
-  initialIndex: number;
-  isMobile: boolean;
-  reducedMotion: boolean;
-  onIndexChange: (index: number) => void;
-  onCanActivate: (index: number) => void;
-  onDragStateChange: (dragging: boolean) => void;
-  onCanHover: (hovering: boolean) => void;
-  setBackground: (hex: string, duration: number) => void;
+  onHover: (hovering: boolean) => void;
+  onCanClick: (index: number) => void;
 }
 
-const CAMERA_HOME = { x: 0, y: 0.3, z: 8.5, fov: 38 };
+/** Rotation "information zones" around the can circumference (radians). */
+const ZONES = [0.15, 0.55, 1.05, 1.6, 2.15, 0.25];
 
-interface ProductKeyframe {
-  t: number;
-  can: { x: number; y: number; z: number; rotY: number; scale: number };
-  cam: { x: number; y: number; z: number; fov: number };
-  warmth: number;
+/** Story keyframes: position/scale of the selected can along the cinematic. */
+function storyPose(p: number, isMobile: boolean) {
+  // intro (0 - .14) | ingredients (.14 - .66) | hero (.66 - .88) | handoff (.88 - 1)
+  const intro = smoothstep(range(p, 0.0, 0.14));
+  const ing = smoothstep(range(p, 0.14, 0.3));
+  const hero = smoothstep(range(p, 0.62, 0.82));
+  const hand = smoothstep(range(p, 0.88, 1.0));
+
+  const introX = isMobile ? 0 : 1.35;
+  const ingX = isMobile ? 0 : 0.35;
+  const heroX = 0;
+  const handX = isMobile ? 0 : 1.25;
+
+  let x = lerp(introX, ingX, ing);
+  x = lerp(x, heroX, hero);
+  x = lerp(x, handX, hand);
+
+  let y = lerp(0, -0.05, ing);
+  y = lerp(y, 0.05, hero);
+  y = lerp(y, 0.35, hand);
+
+  let scale = lerp(1.02, 1.0, ing);
+  scale = lerp(scale, isMobile ? 1.02 : 1.16, hero);
+  scale = lerp(scale, 0.92, hand);
+
+  // Rotation reveals information zones, holding between them
+  const zoneT = range(p, 0.14, 0.66) * (ZONES.length - 1);
+  const zi = Math.min(ZONES.length - 2, Math.floor(zoneT));
+  const local = smoothstep(zoneT - zi);
+  let rotY = lerp(ZONES[zi]!, ZONES[zi + 1]!, local);
+  rotY = lerp(intro * 0.15, rotY, ing);
+  rotY = lerp(rotY, 0, hero); // returns front-facing for the hero
+  rotY = lerp(rotY, -0.22, hand);
+
+  const tilt = lerp(0.05, 0.02, hero);
+
+  return { x, y, z: lerp(0, 0.25, hero), rotY, rotZ: tilt, scale };
 }
 
-const STORY_KEYFRAMES: ProductKeyframe[] = [
-  { t: 0, can: { x: 1.8, y: 0, z: 0.5, rotY: 0.15, scale: 1.4 }, cam: { x: 0, y: 0.8, z: 7.0, fov: 34 }, warmth: 0.3 },
-  { t: 0.2, can: { x: 0.5, y: 0.1, z: 0.6, rotY: 0.6, scale: 1.5 }, cam: { x: 0, y: 0.9, z: 6.5, fov: 33 }, warmth: 0.5 },
-  { t: 0.4, can: { x: -1.4, y: 0.05, z: 0.3, rotY: 1.4, scale: 1.5 }, cam: { x: 0.3, y: 0.8, z: 6.3, fov: 32 }, warmth: 0.8 },
-  { t: 0.6, can: { x: 0, y: 0.2, z: 1.2, rotY: 2.3, scale: 1.7 }, cam: { x: 0, y: 0.7, z: 5.0, fov: 28 }, warmth: 1 },
-  { t: 0.8, can: { x: 0.1, y: -0.05, z: 0.4, rotY: 2.9, scale: 1.4 }, cam: { x: 0, y: 0.9, z: 6.0, fov: 32 }, warmth: 0.6 },
-  { t: 1, can: { x: -0.1, y: 1.0, z: -0.3, rotY: 3.6, scale: 1.3 }, cam: { x: 0, y: 0.5, z: 4.5, fov: 36 }, warmth: 0.9 },
-];
-
-function lerp(a: number, b: number, t: number) {
-  return a + (b - a) * t;
+/** 0 = lit flavor environment, 1 = near-black ingredient studio */
+export function darknessAt(p: number) {
+  return smoothstep(range(p, 0.14, 0.24)) * (1 - smoothstep(range(p, 0.6, 0.72)));
 }
 
-function sampleStory(progress: number) {
-  const p = THREE.MathUtils.clamp(progress, 0, 1);
-  let a = STORY_KEYFRAMES[0]!;
-  let b = STORY_KEYFRAMES[STORY_KEYFRAMES.length - 1]!;
-  for (let i = 0; i < STORY_KEYFRAMES.length - 1; i++) {
-    if (p >= STORY_KEYFRAMES[i]!.t && p <= STORY_KEYFRAMES[i + 1]!.t) {
-      a = STORY_KEYFRAMES[i]!;
-      b = STORY_KEYFRAMES[i + 1]!;
-      break;
-    }
-  }
-  const span = b.t - a.t || 1;
-  const localT = (p - a.t) / span;
-  return {
-    can: {
-      x: lerp(a.can.x, b.can.x, localT),
-      y: lerp(a.can.y, b.can.y, localT),
-      z: lerp(a.can.z, b.can.z, localT),
-      rotY: lerp(a.can.rotY, b.can.rotY, localT),
-      scale: lerp(a.can.scale, b.can.scale, localT),
-    },
-    cam: {
-      x: lerp(a.cam.x, b.cam.x, localT),
-      y: lerp(a.cam.y, b.cam.y, localT),
-      z: lerp(a.cam.z, b.cam.z, localT),
-      fov: lerp(a.cam.fov, b.cam.fov, localT),
-    },
-    warmth: lerp(a.warmth, b.warmth, localT),
-  };
-}
-
-const Experience = forwardRef<ExperienceHandle, ExperienceProps>(function Experience(
-  {
-    products,
-    initialIndex,
-    isMobile,
-    reducedMotion,
-    onIndexChange,
-    onCanActivate,
-    onDragStateChange,
-    onCanHover,
-    setBackground,
-  },
-  ref
-) {
-  const { camera, gl } = useThree();
+export default function Experience({ onHover, onCanClick }: ExperienceProps) {
   const groupRefs = useRef<(THREE.Group | null)[]>([]);
-  const keyLightRef = useRef<THREE.DirectionalLight>(null);
-  const fillLightRef = useRef<THREE.DirectionalLight>(null);
-  const rimLightRef = useRef<THREE.DirectionalLight>(null);
-  const floorMatRef = useRef<THREE.MeshStandardMaterial>(null);
-  const offsetState = useRef({ value: initialIndex });
-  const inertiaRef = useRef(0);
-  const dragRef = useRef({ dragging: false, lastX: 0, lastT: 0 });
-  const wheelTimeout = useRef<number | null>(null);
-  const interactionEnabled = useRef(true);
-  const modeRef = useRef<'selector' | 'product'>('selector');
-  const mouse = useMousePosition();
-  const N = products.length;
+  const keyLight = useRef<THREE.DirectionalLight>(null);
+  const rimLight = useRef<THREE.DirectionalLight>(null);
+  const scanLight = useRef<THREE.PointLight>(null);
+  const ambient = useRef<THREE.AmbientLight>(null);
+  const { camera } = useThree();
 
-  useEffect(() => {
-    camera.position.set(CAMERA_HOME.x, CAMERA_HOME.y, CAMERA_HOME.z);
-    (camera as THREE.PerspectiveCamera).fov = CAMERA_HOME.fov;
-    camera.updateProjectionMatrix();
+  const tmpColor = useMemo(() => new THREE.Color(), []);
 
-    groupRefs.current.forEach((group, i) => {
-      if (!group) return;
-      const rel = i - initialIndex;
-      const t = computeCanTransform(rel, isMobile);
-      group.position.set(t.x, t.y, t.z);
-      group.rotation.y = t.rotY;
-      group.scale.setScalar(t.scale);
-    });
-  }, [camera, initialIndex, isMobile]);
+  useFrame((state, rawDelta) => {
+    const dt = Math.min(rawDelta, 0.05);
+    const t = state.clock.elapsedTime;
+    const { isMobile } = stage;
 
-  function snapToNearest() {
-    const target = THREE.MathUtils.clamp(Math.round(offsetState.current.value), 0, N - 1);
-    gsap.killTweensOf(offsetState.current);
-    gsap.to(offsetState.current, {
-      value: target,
-      duration: reducedMotion ? 0.2 : 0.85,
-      ease: 'power3.out',
-      onComplete: () => onIndexChange(target),
-    });
-  }
+    // Smooth the carousel position toward its target (+ live drag offset)
+    stage.indexFloat = damp(
+      stage.indexFloat,
+      stage.indexTarget + stage.dragOffset,
+      6.5,
+      dt
+    );
 
-  useEffect(() => {
-    const el = gl.domElement;
+    const selectT = stage.selectT;
+    const story = stage.story;
+    const detail = stage.detail;
+    const pose = storyPose(story, isMobile);
+    const dark = darknessAt(story);
+    const selected = stage.selected;
+    const active = products[selected >= 0 ? selected : Math.round(stage.indexFloat)]!;
 
-    function handlePointerDown(e: PointerEvent) {
-      if (!interactionEnabled.current || modeRef.current !== 'selector') return;
-      dragRef.current.dragging = true;
-      dragRef.current.lastX = e.clientX;
-      dragRef.current.lastT = performance.now();
-      inertiaRef.current = 0;
-      gsap.killTweensOf(offsetState.current);
-      onDragStateChange(true);
-    }
+    for (let i = 0; i < products.length; i++) {
+      const g = groupRefs.current[i];
+      if (!g) continue;
+      const rel = i - stage.indexFloat;
+      const car = computeCanTransform(rel, isMobile);
+      const posePreset = CAN_POSES[i % CAN_POSES.length]!;
+      const float = Math.sin(t * 0.62 + posePreset.phase) * 0.045;
+      const floatRot = Math.sin(t * 0.35 + posePreset.phase) * 0.02;
 
-    function handlePointerMove(e: PointerEvent) {
-      if (!dragRef.current.dragging) return;
-      const now = performance.now();
-      const dx = e.clientX - dragRef.current.lastX;
-      const dt = Math.max(1, now - dragRef.current.lastT);
-      const sensitivity = 0.0072;
-      offsetState.current.value = THREE.MathUtils.clamp(
-        offsetState.current.value - dx * sensitivity,
-        -0.4,
-        N - 0.6
-      );
-      inertiaRef.current = (-dx * sensitivity) / (dt / 16.67);
-      dragRef.current.lastX = e.clientX;
-      dragRef.current.lastT = now;
-    }
+      const isSel = i === selected;
+      let tx: number, ty: number, tz: number, sc: number;
+      let rx: number, ry: number, rz: number;
 
-    function handlePointerUp() {
-      if (!dragRef.current.dragging) return;
-      dragRef.current.dragging = false;
-      onDragStateChange(false);
-      snapToNearest();
-    }
-
-    function handleWheel(e: WheelEvent) {
-      if (!interactionEnabled.current || modeRef.current !== 'selector') return;
-      e.preventDefault();
-      gsap.killTweensOf(offsetState.current);
-      offsetState.current.value = THREE.MathUtils.clamp(
-        offsetState.current.value + e.deltaY * 0.0022,
-        -0.4,
-        N - 0.6
-      );
-      if (wheelTimeout.current) window.clearTimeout(wheelTimeout.current);
-      wheelTimeout.current = window.setTimeout(snapToNearest, 130);
-    }
-
-    function handleKeydown(e: KeyboardEvent) {
-      if (!interactionEnabled.current || modeRef.current !== 'selector') return;
-      if (e.key === 'ArrowRight') {
-        const target = THREE.MathUtils.clamp(Math.round(offsetState.current.value) + 1, 0, N - 1);
-        gsap.killTweensOf(offsetState.current);
-        gsap.to(offsetState.current, { value: target, duration: 0.7, ease: 'power3.out', onComplete: () => onIndexChange(target) });
-      } else if (e.key === 'ArrowLeft') {
-        const target = THREE.MathUtils.clamp(Math.round(offsetState.current.value) - 1, 0, N - 1);
-        gsap.killTweensOf(offsetState.current);
-        gsap.to(offsetState.current, { value: target, duration: 0.7, ease: 'power3.out', onComplete: () => onIndexChange(target) });
-      }
-    }
-
-    el.addEventListener('pointerdown', handlePointerDown);
-    window.addEventListener('pointermove', handlePointerMove);
-    window.addEventListener('pointerup', handlePointerUp);
-    el.addEventListener('wheel', handleWheel, { passive: false });
-    window.addEventListener('keydown', handleKeydown);
-
-    return () => {
-      el.removeEventListener('pointerdown', handlePointerDown);
-      window.removeEventListener('pointermove', handlePointerMove);
-      window.removeEventListener('pointerup', handlePointerUp);
-      el.removeEventListener('wheel', handleWheel);
-      window.removeEventListener('keydown', handleKeydown);
-    };
-  }, [gl, N, onIndexChange, onDragStateChange, reducedMotion]);
-
-  useImperativeHandle(ref, () => ({
-    jumpTo(index: number) {
-      gsap.killTweensOf(offsetState.current);
-      gsap.to(offsetState.current, {
-        value: index,
-        duration: reducedMotion ? 0.2 : 0.7,
-        ease: 'power3.out',
-        onComplete: () => onIndexChange(index),
-      });
-    },
-    playSelectTransition(index: number, onComplete: () => void) {
-      interactionEnabled.current = false;
-      modeRef.current = 'product';
-      const product = products[index]!;
-      const dur = reducedMotion ? 0.05 : 1.15;
-      const tl = gsap.timeline({ onComplete });
-
-      groupRefs.current.forEach((group, i) => {
-        if (!group || i === index) return;
-        const dir = i < index ? -1 : 1;
-        tl.to(
-          group.position,
-          { x: group.position.x + dir * 9, z: group.position.z - 3, duration: dur * 0.55, ease: 'power2.in' },
-          0
-        );
-      });
-
-      const selected = groupRefs.current[index];
-      if (selected) {
-        tl.to(selected.position, { x: 0, y: 0.15, z: 2.8, duration: dur, ease: 'power3.inOut' }, 0);
-        tl.to(selected.scale, { x: 1.6, y: 1.6, z: 1.6, duration: dur, ease: 'power3.inOut' }, 0);
-        tl.to(selected.rotation, { y: selected.rotation.y + Math.PI * 0.19, duration: dur, ease: 'power3.inOut' }, 0);
-      }
-
-      tl.to(camera.position, { z: CAMERA_HOME.z - 2.8, y: 0.9, duration: dur, ease: 'power2.inOut' }, 0.1);
-      tl.to(camera as THREE.PerspectiveCamera, {
-        fov: 30,
-        duration: dur,
-        ease: 'power2.inOut',
-        onUpdate: () => camera.updateProjectionMatrix(),
-      }, 0.1);
-
-      setBackground(product.color, dur + 0.15);
-    },
-    playReturnTransition(onComplete: () => void) {
-      const dur = reducedMotion ? 0.05 : 1.2;
-      const index = Math.round(offsetState.current.value);
-      const tl = gsap.timeline({
-        onComplete: () => {
-          modeRef.current = 'selector';
-          interactionEnabled.current = true;
-          onComplete();
-        },
-      });
-
-      setBackground('#f4f2ee', dur * 0.9);
-
-      tl.to(camera.position, { x: CAMERA_HOME.x, y: CAMERA_HOME.y, z: CAMERA_HOME.z, duration: dur, ease: 'power3.inOut' }, 0);
-      tl.to(camera as THREE.PerspectiveCamera, {
-        fov: CAMERA_HOME.fov,
-        duration: dur,
-        ease: 'power3.inOut',
-        onUpdate: () => camera.updateProjectionMatrix(),
-      }, 0);
-
-      const selected = groupRefs.current[index];
-      if (selected) {
-        const target = computeCanTransform(0, isMobile);
-        tl.to(selected.position, { x: target.x, y: target.y, z: target.z, duration: dur, ease: 'power3.inOut' }, 0);
-        tl.to(selected.scale, { x: target.scale, y: target.scale, z: target.scale, duration: dur, ease: 'power3.inOut' }, 0);
-        tl.to(selected.rotation, { y: target.rotY, duration: dur, ease: 'power3.inOut' }, 0);
-      }
-
-      groupRefs.current.forEach((group, i) => {
-        if (!group || i === index) return;
-        const rel = i - index;
-        const target = computeCanTransform(rel, isMobile);
-        tl.to(
-          group.position,
-          { x: target.x, y: target.y, z: target.z, duration: dur, ease: 'power3.inOut' },
-          reducedMotion ? 0 : 0.08 + Math.abs(rel) * 0.05
-        );
-        tl.to(
-          group.scale,
-          { x: target.scale, y: target.scale, z: target.scale, duration: dur, ease: 'power3.inOut' },
-          reducedMotion ? 0 : 0.08 + Math.abs(rel) * 0.05
-        );
-        tl.to(
-          group.rotation,
-          { y: target.rotY, duration: dur, ease: 'power3.inOut' },
-          reducedMotion ? 0 : 0.08 + Math.abs(rel) * 0.05
-        );
-      });
-    },
-    updateProductScroll(progress: number) {
-      const index = Math.round(offsetState.current.value);
-      const selected = groupRefs.current[index];
-      const sample = sampleStory(progress);
-      if (selected) {
-        selected.position.set(sample.can.x, sample.can.y, sample.can.z);
-        selected.rotation.y = sample.can.rotY;
-        selected.scale.setScalar(sample.can.scale);
-      }
-      camera.position.set(sample.cam.x, sample.cam.y, sample.cam.z);
-      (camera as THREE.PerspectiveCamera).fov = sample.cam.fov;
-      camera.updateProjectionMatrix();
-      if (keyLightRef.current) {
-        keyLightRef.current.intensity = 1.4 + sample.warmth * 0.8;
-      }
-      if (rimLightRef.current) {
-        rimLightRef.current.intensity = 0.4 + sample.warmth * 0.6;
-      }
-      // Floor glow follows flavor color
-      if (floorMatRef.current) {
-        const product = products[index]!;
-        const glowColor = new THREE.Color(mixHex(product.color, '#ffffff', 0.3));
-        floorMatRef.current.emissive.copy(glowColor);
-        floorMatRef.current.emissiveIntensity = sample.warmth * 0.15;
-      }
-    },
-    setInteractionEnabled(enabled: boolean) {
-      interactionEnabled.current = enabled;
-    },
-  }));
-
-  useFrame((_, delta) => {
-    if (modeRef.current !== 'selector') return;
-
-    if (!dragRef.current.dragging && Math.abs(inertiaRef.current) > 0.0008) {
-      offsetState.current.value = THREE.MathUtils.clamp(
-        offsetState.current.value + inertiaRef.current * delta * 60,
-        -0.4,
-        N - 0.6
-      );
-      inertiaRef.current *= Math.pow(0.9, delta * 60);
-      if (Math.abs(inertiaRef.current) < 0.01) {
-        inertiaRef.current = 0;
-        snapToNearest();
-      }
-    }
-
-    const centerIndex = Math.round(offsetState.current.value);
-
-    // Floor glow follows selected flavor
-    if (floorMatRef.current) {
-      const product = products[centerIndex] || products[0]!;
-      const targetEmissive = new THREE.Color(mixHex(product.color, '#ffffff', 0.2));
-      floorMatRef.current.emissive.lerp(targetEmissive, 0.05);
-      floorMatRef.current.emissiveIntensity = THREE.MathUtils.lerp(
-        floorMatRef.current.emissiveIntensity,
-        0.08,
-        0.05
-      );
-    }
-
-    groupRefs.current.forEach((group, i) => {
-      if (!group) return;
-      const rel = i - offsetState.current.value;
-      const t = computeCanTransform(rel, isMobile);
-      let px = t.x;
-      let py = t.y;
-
-      if (i === centerIndex && Math.abs(rel) < 0.08) {
-        px += mouse.current.x * 0.15;
-        py += mouse.current.y * 0.08;
-        group.rotation.y = THREE.MathUtils.lerp(group.rotation.y, t.rotY + mouse.current.x * 0.1, 0.06);
+      if (isSel) {
+        tx = lerp(car.x, pose.x, selectT);
+        ty = lerp(car.y + float, pose.y + float * 0.5, selectT);
+        tz = lerp(car.z, pose.z, selectT);
+        sc = lerp(car.scale, pose.scale, selectT);
+        rx = lerp(car.rotX + posePreset.rotX, 0.015, selectT);
+        ry = lerp(car.rotY + posePreset.rotY, pose.rotY, selectT);
+        rz = lerp(car.rotZ + posePreset.rotZ + floatRot, pose.rotZ, selectT);
+        // gentle drift while reading the product details
+        tx += detail * (isMobile ? 0 : 0.12);
+        ty += detail * 0.05;
+        ry += detail * 0.25;
       } else {
-        group.rotation.y = THREE.MathUtils.lerp(group.rotation.y, t.rotY, 0.12);
+        // Non-selected cans move outward + backward and sink into the dark
+        const away = selectT;
+        tx = car.x + Math.sign(rel || 1) * away * 4.2;
+        ty = car.y + float - away * 0.4;
+        tz = car.z - away * 5.5;
+        sc = car.scale * (1 - away * 0.35);
+        rx = car.rotX + posePreset.rotX;
+        ry = car.rotY + posePreset.rotY + away * 0.4;
+        rz = car.rotZ + posePreset.rotZ + floatRot;
       }
 
-      group.position.x = THREE.MathUtils.lerp(group.position.x, px, 0.16);
-      group.position.y = THREE.MathUtils.lerp(group.position.y, py, 0.16);
-      group.position.z = THREE.MathUtils.lerp(group.position.z, t.z, 0.16);
-      const s = THREE.MathUtils.lerp(group.scale.x, t.scale, 0.16);
-      group.scale.setScalar(s);
-    });
+      g.position.set(
+        damp(g.position.x, tx, 9, dt),
+        damp(g.position.y, ty, 9, dt),
+        damp(g.position.z, tz, 9, dt)
+      );
+      g.rotation.set(
+        damp(g.rotation.x, rx, 8, dt),
+        damp(g.rotation.y, ry, 8, dt),
+        damp(g.rotation.z, rz, 8, dt)
+      );
+      const s = damp(g.scale.x, Math.max(0.001, sc), 9, dt);
+      g.scale.setScalar(s);
+      g.visible = s > 0.02 && (selectT < 0.98 || isSel);
+    }
+
+    // --- Lighting: flavor-tinted, near-black through the ingredient section
+    const flavor = tmpColor.set(active.color);
+    if (ambient.current) {
+      ambient.current.intensity = damp(
+        ambient.current.intensity,
+        lerp(0.55, 0.05, dark) * lerp(1, 0.85, selectT),
+        5,
+        dt
+      );
+    }
+    if (keyLight.current) {
+      keyLight.current.intensity = damp(keyLight.current.intensity, lerp(2.6, 0.12, dark), 5, dt);
+      keyLight.current.color.lerp(
+        tmpColor.set('#ffffff').lerp(flavor, 0.18 * selectT),
+        0.06
+      );
+    }
+    if (rimLight.current) {
+      rimLight.current.intensity = damp(rimLight.current.intensity, lerp(1.6, 2.4, dark), 5, dt);
+      rimLight.current.color.lerp(flavor, 0.08);
+    }
+    if (scanLight.current) {
+      // A studio light that scans vertically across the can while dark
+      const scanP = range(story, 0.14, 0.66);
+      scanLight.current.position.set(
+        pose.x + 1.15,
+        lerp(-1.6, 1.7, scanP),
+        1.5
+      );
+      scanLight.current.intensity = damp(scanLight.current.intensity, dark * 26, 5, dt);
+      scanLight.current.color.lerp(tmpColor.set('#ffffff').lerp(flavor, 0.25), 0.08);
+    }
+
+    // --- Camera: stable. Only the selection transition reframes it.
+    const cam = camera as THREE.PerspectiveCamera;
+    const targetZ = lerp(8.4, isMobile ? 8.2 : 7.4, selectT);
+    const targetY = lerp(0.15, 0.05, selectT);
+    cam.position.x = damp(cam.position.x, 0, 4, dt);
+    cam.position.y = damp(cam.position.y, targetY, 4, dt);
+    cam.position.z = damp(cam.position.z, targetZ, 3.2, dt);
+    const targetFov = lerp(42, 38, selectT);
+    if (Math.abs(cam.fov - targetFov) > 0.01) {
+      cam.fov = damp(cam.fov, targetFov, 3, dt);
+      cam.updateProjectionMatrix();
+    }
+    cam.lookAt(0, 0, 0);
   });
 
   return (
     <>
-      {/* Studio lighting */}
-      <ambientLight intensity={0.6} />
-      <hemisphereLight args={['#ffffff', '#e8e4df', 0.4]} />
-      <directionalLight ref={keyLightRef} position={[5, 7, 6]} intensity={1.4} color="#fff8f0" castShadow />
-      <directionalLight ref={fillLightRef} position={[-4, 2, 3]} intensity={0.4} color="#e0eaff" />
-      <directionalLight ref={rimLightRef} position={[-3, 4, -5]} intensity={0.5} color="#ffffff" />
-
-      {/* Environment for reflections */}
-      <Environment preset="studio" />
-
-      {/* Studio floor — cyclorama style, no hard horizon */}
-      <mesh position={[0, -1.65, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-        <planeGeometry args={[60, 60]} />
-        <meshStandardMaterial
-          ref={floorMatRef}
-          color="#f0ede8"
-          roughness={0.85}
-          metalness={0.05}
-          emissive="#000000"
-          emissiveIntensity={0}
-        />
-      </mesh>
-      <ContactShadows position={[0, -1.64, 0]} opacity={0.45} scale={16} blur={2.8} far={5} />
+      <ambientLight ref={ambient} intensity={0.55} />
+      <directionalLight ref={keyLight} position={[3.5, 5, 5]} intensity={2.6} />
+      <directionalLight ref={rimLight} position={[-4.5, 2.2, -3]} intensity={1.6} />
+      <pointLight ref={scanLight} position={[1.5, 0, 1.5]} intensity={0} distance={9} decay={1.6} />
+      <Environment preset="studio" environmentIntensity={0.65} />
 
       {products.map((product, i) => (
         <group
           key={product.id}
-          ref={(el) => (groupRefs.current[i] = el)}
+          ref={(el) => {
+            groupRefs.current[i] = el;
+          }}
+          onPointerOver={(e) => {
+            e.stopPropagation();
+            if (stage.selected < 0) onHover(true);
+          }}
+          onPointerOut={() => onHover(false)}
           onClick={(e) => {
             e.stopPropagation();
-            const nearest = Math.round(offsetState.current.value);
-            if (i === nearest) onCanActivate(i);
-            else {
-              gsap.killTweensOf(offsetState.current);
-              gsap.to(offsetState.current, { value: i, duration: 0.7, ease: 'power3.out', onComplete: () => onIndexChange(i) });
-            }
+            if (stage.selected < 0) onCanClick(i);
           }}
-          onPointerOver={() => onCanHover(true)}
-          onPointerOut={() => onCanHover(false)}
         >
-          <ProductCan product={product} isSelected={i === Math.round(offsetState.current.value)} />
+          <ProductCan product={product} isSelected={i === stage.selected} />
         </group>
       ))}
     </>
   );
-});
-
-export default Experience;
+}
