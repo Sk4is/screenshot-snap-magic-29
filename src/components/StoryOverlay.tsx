@@ -1,380 +1,222 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
-import gsap from 'gsap';
+import { forwardRef, useImperativeHandle, useRef } from 'react';
 import type { Product } from '@/data/products';
+import { clamp01, range, smoothstep } from '@/lib/stage';
 
 export interface StoryOverlayHandle {
-  updateProgress: (progress: number) => void;
-  reset: () => void;
+  update: (p: number) => void;
 }
 
-interface StoryOverlayProps {
+const ING_START = 0.16;
+const ING_END = 0.62;
+
+export function ingredientStepAt(p: number) {
+  if (p < ING_START || p > ING_END) return -1;
+  const t = (p - ING_START) / (ING_END - ING_START);
+  return Math.min(3, Math.floor(t * 4));
+}
+
+interface Props {
   product: Product;
-  visible: boolean;
-  isMobile: boolean;
+  active: boolean;
 }
 
-function clamp(v: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, v));
-}
-
-function range(p: number, start: number, end: number) {
-  return clamp((p - start) / (end - start), 0, 1);
-}
-
-const StoryOverlay = forwardRef<StoryOverlayHandle, StoryOverlayProps>(function StoryOverlay(
-  { product, visible, isMobile },
+/** Foreground editorial copy for the cinematic story (intro + ingredients). */
+const StoryOverlay = forwardRef<StoryOverlayHandle, Props>(function StoryOverlay(
+  { product, active },
   ref
 ) {
-  const rootRef = useRef<HTMLDivElement>(null);
-  const ch1Ref = useRef<HTMLDivElement>(null);
-  const ch2Ref = useRef<HTMLDivElement>(null);
-  const ch3Ref = useRef<HTMLDivElement>(null);
-  const ch4Ref = useRef<HTMLDivElement>(null);
-  const ch5Ref = useRef<HTMLDivElement>(null);
-
-  const ch1LinesRef = useRef<HTMLSpanElement[]>([]);
-  const ch1SubRef = useRef<HTMLParagraphElement>(null);
-  const ch1DescRef = useRef<HTMLParagraphElement>(null);
-  const ch1CtaRef = useRef<HTMLDivElement>(null);
-  const ch2WordsRef = useRef<HTMLSpanElement[]>([]);
-  const ch3WordsRef = useRef<HTMLSpanElement[]>([]);
-  const ch4LabelsRef = useRef<HTMLDivElement[]>([]);
-  const ch4LinesRef = useRef<SVGLineElement[]>([]);
-  const ch5WordsRef = useRef<HTMLSpanElement[]>([]);
+  const introRef = useRef<HTMLDivElement>(null);
+  const introLines = useRef<(HTMLSpanElement | null)[]>([]);
+  const ingRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const ingLines = useRef<(HTMLDivElement | null)[]>([]);
+  const counterRef = useRef<HTMLDivElement>(null);
+  const counterBar = useRef<HTMLDivElement>(null);
+  const counterText = useRef<HTMLSpanElement>(null);
+  const dotsRef = useRef<(HTMLSpanElement | null)[]>([]);
+  const dotsWrap = useRef<HTMLDivElement>(null);
 
   useImperativeHandle(ref, () => ({
-    updateProgress(p: number) {
-      updateCh1(p);
-      updateCh2(p);
-      updateCh3(p);
-      updateCh4(p);
-      updateCh5(p);
-    },
-    reset() {
-      const allSpans = [
-        ...ch1LinesRef.current,
-        ...ch2WordsRef.current,
-        ...ch3WordsRef.current,
-        ...ch5WordsRef.current,
-      ];
-      gsap.set(allSpans, { yPercent: 115, xPercent: 0, opacity: 1, y: 0, x: 0 });
-      gsap.set([ch1SubRef.current, ch1DescRef.current, ch1CtaRef.current].filter(Boolean), {
-        opacity: 0,
-        y: 14,
+    update(p: number) {
+      // Flavor intro copy
+      const introIn = smoothstep(range(p, 0.02, 0.1));
+      const introOut = smoothstep(range(p, 0.13, 0.2));
+      const introO = introIn * (1 - introOut);
+      if (introRef.current) introRef.current.style.opacity = String(introO);
+      introLines.current.forEach((el, i) => {
+        if (!el) return;
+        const t = smoothstep(range(p, 0.02 + i * 0.015, 0.09 + i * 0.02)) * (1 - introOut);
+        el.style.transform = `translate3d(0, ${(1 - t) * 110}%, 0)`;
       });
-      gsap.set(ch4LabelsRef.current, { opacity: 0 });
-      gsap.set(ch4LinesRef.current, { opacity: 0, strokeDashoffset: 200 });
+
+      // Ingredient chapters — masked in/out, one visible at a time
+      const span = (ING_END - ING_START) / 4;
+      ingRefs.current.forEach((el, i) => {
+        if (!el) return;
+        const s = ING_START + i * span;
+        const inT = smoothstep(range(p, s, s + span * 0.32));
+        const outT = smoothstep(range(p, s + span * 0.78, s + span * 1.05));
+        el.style.opacity = String(clamp01(inT * (1 - outT)));
+        const lines = ingLines.current.slice(i * 3, i * 3 + 3);
+        lines.forEach((line, j) => {
+          if (!line) return;
+          const li = smoothstep(range(p, s + j * span * 0.06, s + span * 0.3 + j * span * 0.06));
+          const lo = outT;
+          line.style.transform = `translate3d(0, ${((1 - li) * 115 + lo * -115).toFixed(2)}%, 0)`;
+        });
+      });
+
+      // Top-left chapter counter + progress bar
+      const chapters = 7;
+      const idx = Math.min(chapters, Math.max(1, Math.ceil(p * chapters) || 1));
+      if (counterText.current) {
+        counterText.current.textContent = `${String(idx).padStart(2, '0')} / 0${chapters}`;
+      }
+      if (counterBar.current) counterBar.current.style.width = `${clamp01(p) * 100}%`;
+      if (counterRef.current) {
+        counterRef.current.style.opacity = String(smoothstep(range(p, 0.01, 0.06)) * (1 - smoothstep(range(p, 0.94, 1))));
+      }
+
+      // Right-side ingredient indicator
+      const step = ingredientStepAt(p);
+      if (dotsWrap.current) {
+        dotsWrap.current.style.opacity = String(
+          smoothstep(range(p, 0.13, 0.2)) * (1 - smoothstep(range(p, 0.62, 0.7)))
+        );
+      }
+      dotsRef.current.forEach((dot, i) => {
+        if (!dot) return;
+        const on = i === step;
+        dot.style.color = on ? '#ffffff' : 'rgba(255,255,255,0.35)';
+        dot.style.borderColor = on ? product.color : 'rgba(255,255,255,0.2)';
+        dot.style.boxShadow = on ? `0 0 18px ${product.color}` : 'none';
+      });
     },
   }));
 
-  function updateCh1(p: number) {
-    // Chapter 1: 0 - 0.2
-    const local = range(p, 0, 0.2);
-    const lines = ch1LinesRef.current;
-    lines.forEach((el, i) => {
-      if (!el) return;
-      const enterT = range(local, 0, 0.4);
-      const exitT = range(local, 0.55, 1);
-      const yIn = 115 - enterT * 115;
-      const yOut = -exitT * 115;
-      gsap.set(el, { yPercent: yIn + yOut });
-    });
-    const sub = ch1SubRef.current;
-    const desc = ch1DescRef.current;
-    const cta = ch1CtaRef.current;
-    const fadeT = range(local, 0.2, 0.5);
-    const exitT = range(local, 0.4, 0.85);
-    if (sub) gsap.set(sub, { opacity: fadeT * (1 - exitT), y: 14 - fadeT * 14 - exitT * 20 });
-    if (desc) gsap.set(desc, { opacity: fadeT * (1 - exitT), y: 14 - fadeT * 14 - exitT * 20 });
-    if (cta) gsap.set(cta, { opacity: fadeT * (1 - exitT), y: 14 - fadeT * 14 - exitT * 20 });
-  }
-
-  function updateCh2(p: number) {
-    // Chapter 2: 0.2 - 0.4
-    const local = range(p, 0.2, 0.4);
-    const words = ch2WordsRef.current;
-    words.forEach((el, i) => {
-      if (!el) return;
-      const enterT = range(local, 0.05 + i * 0.08, 0.4 + i * 0.08);
-      const exitT = range(local, 0.6 + i * 0.05, 0.95);
-      const yIn = 115 - enterT * 115;
-      const yOut = -exitT * 115;
-      gsap.set(el, { yPercent: yIn + yOut });
-    });
-  }
-
-  function updateCh3(p: number) {
-    // Chapter 3: 0.4 - 0.6
-    const local = range(p, 0.4, 0.6);
-    const words = ch3WordsRef.current;
-    words.forEach((el, i) => {
-      if (!el) return;
-      const dir = i % 2 === 0 ? -1 : 1;
-      const enterT = range(local, 0.05 + i * 0.1, 0.45 + i * 0.1);
-      const exitT = range(local, 0.55 + i * 0.08, 0.95);
-      const xIn = dir * 120 - enterT * dir * 120;
-      const xOut = exitT * dir * 120;
-      gsap.set(el, { xPercent: xIn + xOut });
-    });
-  }
-
-  function updateCh4(p: number) {
-    // Chapter 4: 0.6 - 0.8
-    const local = range(p, 0.6, 0.8);
-    const labels = ch4LabelsRef.current;
-    const lines = ch4LinesRef.current;
-    labels.forEach((el, i) => {
-      if (!el) return;
-      const enterT = range(local, 0.05 + i * 0.08, 0.35 + i * 0.08);
-      const exitT = range(local, 0.65, 0.95);
-      gsap.set(el, { opacity: enterT * (1 - exitT) });
-    });
-    lines.forEach((el, i) => {
-      if (!el) return;
-      const enterT = range(local, 0.05 + i * 0.08, 0.4 + i * 0.08);
-      const exitT = range(local, 0.65, 0.95);
-      gsap.set(el, {
-        opacity: enterT * (1 - exitT),
-        strokeDashoffset: 200 - enterT * 200,
-      });
-    });
-  }
-
-  function updateCh5(p: number) {
-    // Chapter 5: 0.8 - 1.0
-    const local = range(p, 0.8, 1.0);
-    const words = ch5WordsRef.current;
-    words.forEach((el, i) => {
-      if (!el) return;
-      const enterT = range(local, 0.05 + i * 0.1, 0.4 + i * 0.1);
-      const exitT = range(local, 0.55 + i * 0.08, 0.95);
-      const yIn = 115 - enterT * 115;
-      const yOut = -exitT * 115;
-      const yScatter = exitT * (i % 2 === 0 ? -40 : 40);
-      gsap.set(el, { yPercent: yIn + yOut, y: yScatter, opacity: enterT * (1 - exitT) });
-    });
-  }
-
-  // Reset on product change
-  useEffect(() => {
-    const allSpans = [
-      ...ch1LinesRef.current,
-      ...ch2WordsRef.current,
-      ...ch3WordsRef.current,
-      ...ch5WordsRef.current,
-    ];
-    gsap.set(allSpans, { yPercent: 115, xPercent: 0, opacity: 1, y: 0, x: 0 });
-    gsap.set([ch1SubRef.current, ch1DescRef.current, ch1CtaRef.current].filter(Boolean), {
-      opacity: 0,
-      y: 14,
-    });
-    gsap.set(ch4LabelsRef.current, { opacity: 0 });
-    gsap.set(ch4LinesRef.current, { opacity: 0, strokeDashoffset: 200 });
-  }, [product]);
-
-  const s = product.story;
-
   return (
     <div
-      ref={rootRef}
-      className={`pointer-events-none fixed inset-0 z-20 transition-opacity duration-500 ${
-        visible ? 'opacity-100' : 'opacity-0'
-      }`}
-      style={{ color: 'white' }}
+      className={`pointer-events-none fixed inset-0 z-30 ${active ? '' : 'hidden'}`}
+      aria-hidden={!active}
     >
-      {/* Chapter 1 - Hero */}
-      <section
-        ref={ch1Ref}
-        data-ch1
-        className="absolute left-0 top-0 flex h-screen w-full items-center"
-      >
-        <div className="w-full px-6 sm:px-12 lg:px-20">
-          <div className="max-w-xl">
-            <div
-              className="editorial-title"
-              style={{ fontSize: 'clamp(3rem, 9vw, 8rem)', color: 'white' }}
-            >
-              {s.heroTitle.map((line, i) => (
-                <div key={i} className="mask-reveal block">
-                  <span
-                    ref={(el) => {
-                      if (el) ch1LinesRef.current[i] = el;
-                    }}
-                    className="block"
-                  >
-                    {line}
-                  </span>
-                </div>
-              ))}
-            </div>
-            <p
-              ref={ch1SubRef}
-              className="mt-6 font-display text-sm font-semibold tracking-[0.1em] text-white/80 sm:text-lg"
-            >
-              {s.heroSubtitle}
-            </p>
-            <p
-              ref={ch1DescRef}
-              className="mt-3 max-w-sm font-display text-xs font-medium leading-relaxed text-white/60 sm:text-base"
-            >
-              {s.heroDescription}
-            </p>
-            <div
-              ref={ch1CtaRef}
-              className="pointer-events-auto mt-8 inline-flex cursor-pointer items-center gap-3 font-display text-xs font-bold tracking-[0.2em] text-white sm:text-sm"
-            >
-              <span className="cta-link">
-                <span className="cta-text">{s.heroCta}</span>
-                <span className="cta-arrow">→</span>
-              </span>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Chapter 2 - REAL FRUIT ENERGY */}
-      <section
-        ref={ch2Ref}
-        data-ch2
-        className="absolute left-0 flex w-full items-center justify-end"
-        style={{ top: '100vh', height: '100vh' }}
-      >
-        <div className="w-full px-6 sm:px-12 lg:px-20">
-          <div className="flex flex-col items-end text-right">
-            {s.chapterTwoWords.map((word, i) => (
-              <div key={i} className="mask-reveal block">
-                <span
-                  ref={(el) => {
-                    if (el) ch2WordsRef.current[i] = el;
-                  }}
-                  className="editorial-title block text-white"
-                  style={{
-                    fontSize: isMobile
-                      ? 'clamp(3rem, 14vw, 6rem)'
-                      : 'clamp(5rem, 16vw, 12rem)',
-                  }}
-                >
-                  {word}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* Chapter 3 - ZERO BORING FLAVOR giant */}
-      <section
-        ref={ch3Ref}
-        data-ch3
-        className="absolute left-0 flex w-full items-center justify-center overflow-hidden"
-        style={{ top: '200vh', height: '100vh' }}
-      >
-        <div className="flex flex-col items-center">
-          {s.chapterThreeWords.map((word, i) => (
-            <div key={i} className="mask-reveal block" style={{ overflow: 'visible' }}>
-              <span
-                ref={(el) => {
-                  if (el) ch3WordsRef.current[i] = el;
-                }}
-                className="editorial-title block text-white/90"
-                style={{
-                  fontSize: 'clamp(5rem, 18vw, 20rem)',
-                  lineHeight: 0.78,
-                  letterSpacing: '-0.06em',
-                }}
-              >
-                {word}
-              </span>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* Chapter 4 - Ingredients diagram */}
-      <section
-        ref={ch4Ref}
-        data-ch4
-        className="absolute left-0 flex w-full items-center justify-center"
-        style={{ top: '300vh', height: '100vh' }}
-      >
-        <div className="relative h-full w-full">
-          {s.ingredients.map((label, i) => {
-            const positions = [
-              { top: '18%', left: '8%' },
-              { top: '32%', right: '8%' },
-              { bottom: '22%', left: '10%' },
-              { bottom: '14%', right: '10%' },
-            ];
-            const pos = positions[i] || positions[0];
-            return (
-              <div
-                key={i}
-                ref={(el) => {
-                  if (el) ch4LabelsRef.current[i] = el;
-                }}
-                className="absolute font-display text-sm font-bold tracking-[0.15em] text-white sm:text-xl"
-                style={pos as React.CSSProperties}
-              >
-                {label}
-              </div>
-            );
-          })}
-          <svg
-            className="absolute inset-0 h-full w-full"
-            viewBox="0 0 100 100"
-            preserveAspectRatio="none"
+      {/* chapter counter */}
+      <div ref={counterRef} className="absolute left-5 top-24 w-[min(60vw,270px)] opacity-0 sm:left-8">
+        <div className="flex items-center gap-4">
+          <span
+            ref={counterText}
+            className="font-display text-[11px] font-semibold tracking-[0.25em] text-white/70"
           >
-            {[
-              { x1: 14, y1: 24, x2: 50, y2: 50 },
-              { x1: 86, y1: 38, x2: 50, y2: 50 },
-              { x1: 16, y1: 74, x2: 50, y2: 50 },
-              { x1: 84, y1: 82, x2: 50, y2: 50 },
-            ].map((l, i) => (
-              <line
-                key={i}
-                ref={(el) => {
-                  if (el) ch4LinesRef.current[i] = el;
-                }}
-                x1={l.x1}
-                y1={l.y1}
-                x2={l.x2}
-                y2={l.y2}
-                stroke="rgba(255,255,255,0.4)"
-                strokeWidth="0.15"
-                strokeDasharray="200"
-                strokeDashoffset="200"
-              />
-            ))}
-          </svg>
+            01 / 07
+          </span>
+          <div className="h-[2px] flex-1 overflow-hidden bg-white/15">
+            <div ref={counterBar} className="h-full bg-white" style={{ width: '0%' }} />
+          </div>
         </div>
-      </section>
+      </div>
 
-      {/* Chapter 5 - MADE TO MOVE */}
-      <section
-        ref={ch5Ref}
-        data-ch5
-        className="absolute left-0 flex w-full items-center justify-center"
-        style={{ top: '400vh', height: '100vh' }}
+      {/* flavor intro */}
+      <div
+        ref={introRef}
+        className="absolute left-6 top-1/2 max-w-[min(88vw,520px)] -translate-y-1/2 opacity-0 sm:left-14 lg:left-20"
       >
-        <div className="flex flex-col items-center">
-          {s.chapterFiveWords.map((word, i) => (
-            <div key={i} className="mask-reveal block">
+        <h2 className="editorial-title text-[clamp(2.6rem,6.5vw,5.2rem)] text-white">
+          {product.words.map((w, i) => (
+            <span key={w} className="mask-reveal block">
               <span
                 ref={(el) => {
-                  if (el) ch5WordsRef.current[i] = el;
-                }}
-                className="editorial-title block text-white"
-                style={{
-                  fontSize: 'clamp(4rem, 15vw, 14rem)',
-                  lineHeight: 0.82,
+                  introLines.current[i] = el;
                 }}
               >
-                {word}
+                {w}
+              </span>
+            </span>
+          ))}
+        </h2>
+        <div className="mask-reveal mt-6 block max-w-md">
+          <span
+            ref={(el) => {
+              introLines.current[2] = el;
+            }}
+            className="block text-sm leading-relaxed text-white/75 sm:text-base"
+          >
+            {product.tagline}
+          </span>
+        </div>
+        <div className="mask-reveal mt-3 block max-w-md">
+          <span
+            ref={(el) => {
+              introLines.current[3] = el;
+            }}
+            className="block text-sm leading-relaxed text-white/55"
+          >
+            {product.description}
+          </span>
+        </div>
+      </div>
+
+      {/* ingredient chapters */}
+      {product.ingredients.map((ing, i) => (
+        <div
+          key={ing.label}
+          ref={(el) => {
+            ingRefs.current[i] = el;
+          }}
+          className="absolute left-6 top-1/2 max-w-[min(88vw,460px)] -translate-y-1/2 opacity-0 sm:left-14 lg:left-20"
+        >
+          <div className="mask-reveal block">
+            <div
+              ref={(el) => {
+                ingLines.current[i * 3] = el;
+              }}
+            >
+              <span
+                className="inline-flex items-center gap-2 px-3 py-1 font-display text-[10px] font-bold tracking-[0.22em] text-white"
+                style={{ background: product.color }}
+              >
+                {ing.label}
               </span>
             </div>
-          ))}
+          </div>
+          <div className="mask-reveal mt-5 block">
+            <div
+              ref={(el) => {
+                ingLines.current[i * 3 + 1] = el;
+              }}
+            >
+              <h3 className="editorial-title whitespace-pre-line text-[clamp(2.2rem,5.5vw,4.2rem)] text-white">
+                {ing.title}
+              </h3>
+            </div>
+          </div>
+          <div className="mask-reveal mt-5 block max-w-sm">
+            <div
+              ref={(el) => {
+                ingLines.current[i * 3 + 2] = el;
+              }}
+            >
+              <p className="text-sm leading-relaxed text-white/65">{ing.copy}</p>
+            </div>
+          </div>
         </div>
-      </section>
+      ))}
+
+      {/* right-side ingredient indicator */}
+      <div
+        ref={dotsWrap}
+        className="absolute right-5 top-1/2 flex -translate-y-1/2 flex-col gap-3 opacity-0 sm:right-8"
+      >
+        {product.ingredients.map((ing, i) => (
+          <span
+            key={ing.label}
+            ref={(el) => {
+              dotsRef.current[i] = el;
+            }}
+            className="flex h-8 w-8 items-center justify-center rounded-full border font-display text-[10px] font-semibold transition-colors duration-300"
+            style={{ borderColor: 'rgba(255,255,255,0.2)', color: 'rgba(255,255,255,0.35)' }}
+          >
+            {i + 1}
+          </span>
+        ))}
+      </div>
     </div>
   );
 });
