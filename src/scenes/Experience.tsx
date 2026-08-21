@@ -14,6 +14,7 @@ interface ExperienceProps {
 
 /** Rotation "information zones" around the can circumference (radians). */
 const ZONES = [0.15, 0.55, 1.05, 1.6, 2.15, 0.25];
+const FRONT_ROTATION = 0;
 
 /** Story keyframes: position/scale of the selected can along the cinematic. */
 function storyPose(p: number, isMobile: boolean) {
@@ -64,10 +65,12 @@ export default function Experience({ onHover, onCanClick }: ExperienceProps) {
   const keyLight = useRef<THREE.DirectionalLight>(null);
   const rimLight = useRef<THREE.DirectionalLight>(null);
   const scanLight = useRef<THREE.PointLight>(null);
+  const focusLight = useRef<THREE.PointLight>(null);
   const ambient = useRef<THREE.AmbientLight>(null);
   const { camera } = useThree();
 
   const tmpColor = useMemo(() => new THREE.Color(), []);
+  const tmpColor2 = useMemo(() => new THREE.Color(), []);
 
   useFrame((state, rawDelta) => {
     const dt = Math.min(rawDelta, 0.05);
@@ -100,6 +103,9 @@ export default function Experience({ onHover, onCanClick }: ExperienceProps) {
       const floatRot = Math.sin(t * 0.35 + posePreset.phase) * 0.02;
 
       const isSel = i === selected;
+      const centerFocus = Math.max(0, 1 - Math.min(Math.abs(rel), 1));
+      const focus = selected >= 0 ? (isSel ? 1 : 0.12) : 0.18 + centerFocus * 0.82;
+      const productColor = tmpColor.set(products[i]!.color);
       let tx: number, ty: number, tz: number, sc: number;
       let rx: number, ry: number, rz: number;
 
@@ -109,7 +115,8 @@ export default function Experience({ onHover, onCanClick }: ExperienceProps) {
         tz = lerp(car.z, pose.z, selectT);
         sc = lerp(car.scale, pose.scale, selectT);
         rx = lerp(car.rotX + posePreset.rotX, 0.015, selectT);
-        ry = lerp(car.rotY + posePreset.rotY, pose.rotY, selectT);
+        const selectedRotation = lerp(pose.rotY, FRONT_ROTATION, smoothstep(selectT));
+        ry = lerp(car.rotY + posePreset.rotY, selectedRotation, selectT);
         rz = lerp(car.rotZ + posePreset.rotZ + floatRot, pose.rotZ, selectT);
         // gentle drift while reading the product details
         tx += detail * (isMobile ? 0 : 0.12);
@@ -123,7 +130,8 @@ export default function Experience({ onHover, onCanClick }: ExperienceProps) {
         tz = car.z - away * 5.5;
         sc = car.scale * (1 - away * 0.35);
         rx = car.rotX + posePreset.rotX;
-        ry = car.rotY + posePreset.rotY + away * 0.4;
+        const carouselFront = smoothstep(centerFocus);
+        ry = lerp(car.rotY + posePreset.rotY + away * 0.4, FRONT_ROTATION, carouselFront * 0.88);
         rz = car.rotZ + posePreset.rotZ + floatRot;
       }
 
@@ -140,6 +148,24 @@ export default function Experience({ onHover, onCanClick }: ExperienceProps) {
       const s = damp(g.scale.x, Math.max(0.001, sc), 9, dt);
       g.scale.setScalar(s);
       g.visible = s > 0.02 && (selectT < 0.98 || isSel);
+
+      // Fade each can’s material response independently so the hero light travels with the carousel.
+      g.children.forEach((child, childIndex) => {
+        if (!(child instanceof THREE.Mesh)) return;
+        const materials = Array.isArray(child.material) ? child.material : [child.material];
+        materials.forEach((material) => {
+          if (!(material instanceof THREE.MeshPhysicalMaterial)) return;
+          const targetEnv = 0.42 + focus * 1.28;
+          material.envMapIntensity = damp(material.envMapIntensity, targetEnv, 7, dt);
+          if (childIndex === 0) {
+            material.emissive.lerp(productColor, 0.08);
+            material.emissiveIntensity = damp(material.emissiveIntensity, focus * 0.16, 7, dt);
+            material.metalness = damp(material.metalness, 0.46 + focus * 0.27, 7, dt);
+          } else if (childIndex === 1) {
+            material.opacity = damp(material.opacity, 0.18 + focus * 0.3, 7, dt);
+          }
+        });
+      });
     }
 
     // --- Lighting: flavor-tinted, near-black through the ingredient section
@@ -153,15 +179,28 @@ export default function Experience({ onHover, onCanClick }: ExperienceProps) {
       );
     }
     if (keyLight.current) {
-      keyLight.current.intensity = damp(keyLight.current.intensity, lerp(2.6, 0.12, dark), 5, dt);
+      keyLight.current.intensity = damp(
+        keyLight.current.intensity,
+        lerp(2.45, 0.12, dark) + selectT * 0.75,
+        5,
+        dt
+      );
       keyLight.current.color.lerp(
-        tmpColor.set('#ffffff').lerp(flavor, 0.18 * selectT),
+        tmpColor2.set('#ffffff').lerp(flavor, 0.32 + 0.24 * selectT),
         0.06
       );
     }
     if (rimLight.current) {
-      rimLight.current.intensity = damp(rimLight.current.intensity, lerp(1.6, 2.4, dark), 5, dt);
-      rimLight.current.color.lerp(flavor, 0.08);
+      rimLight.current.intensity = damp(
+        rimLight.current.intensity,
+        lerp(1.45, 2.3, dark) + selectT * 1.35,
+        5,
+        dt
+      );
+      rimLight.current.color.lerp(
+        tmpColor2.set('#ffffff').lerp(flavor, 0.5 + 0.2 * selectT),
+        0.08
+      );
     }
     if (scanLight.current) {
       // A studio light that scans vertically across the can while dark
@@ -172,7 +211,17 @@ export default function Experience({ onHover, onCanClick }: ExperienceProps) {
         1.5
       );
       scanLight.current.intensity = damp(scanLight.current.intensity, dark * 26, 5, dt);
-      scanLight.current.color.lerp(tmpColor.set('#ffffff').lerp(flavor, 0.25), 0.08);
+      scanLight.current.color.lerp(tmpColor2.set('#ffffff').lerp(flavor, 0.25), 0.08);
+    }
+    if (focusLight.current) {
+      focusLight.current.position.set(pose.x + 0.6, pose.y + 0.9, pose.z + 2.4);
+      focusLight.current.intensity = damp(
+        focusLight.current.intensity,
+        (selected >= 0 ? 4.8 : 2.4) * (1 - dark * 0.65),
+        5,
+        dt
+      );
+      focusLight.current.color.lerp(flavor, 0.12);
     }
 
     // --- Camera: stable. Only the selection transition reframes it.
@@ -193,10 +242,11 @@ export default function Experience({ onHover, onCanClick }: ExperienceProps) {
   return (
     <>
       <ambientLight ref={ambient} intensity={0.55} />
-      <directionalLight ref={keyLight} position={[3.5, 5, 5]} intensity={2.6} />
-      <directionalLight ref={rimLight} position={[-4.5, 2.2, -3]} intensity={1.6} />
+      <directionalLight ref={keyLight} position={[3.5, 5, 5]} intensity={2.8} />
+      <directionalLight ref={rimLight} position={[-4.5, 2.2, -3]} intensity={2.2} />
       <pointLight ref={scanLight} position={[1.5, 0, 1.5]} intensity={0} distance={9} decay={1.6} />
-      <Environment preset="studio" environmentIntensity={0.65} />
+      <pointLight ref={focusLight} position={[0.6, 0.9, 2.4]} intensity={2.4} distance={8} decay={1.5} />
+      <Environment preset="studio" environmentIntensity={0.85} />
 
       {products.map((product, i) => (
         <group

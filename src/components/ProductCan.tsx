@@ -1,15 +1,23 @@
 import { forwardRef, useMemo } from 'react';
 import * as THREE from 'three';
 import type { Product } from '@/data/products';
-import { createCanLabelTexture, createCondensationTexture } from '@/utils/canLabelTexture';
+import {
+  createCanLabelTexture,
+  createCondensationTexture,
+  createCanRoughnessTexture,
+  createCanNormalTexture,
+  createMetalRoughnessTexture,
+  createMetalNormalTexture,
+} from '@/utils/canLabelTexture';
 
 interface ProductCanProps {
   product: Product;
   isSelected?: boolean;
 }
 
-const METAL_COLOR = '#d8d8d8';
-const METAL_DARK = '#b0b0b0';
+const METAL_COLOR = '#c8c8cc';
+const METAL_DARK = '#8a8a90';
+const METAL_BRIGHT = '#e8e8ee';
 
 // Tall slim 500ml can proportions: ~2.7x taller than wide
 const CAN_RADIUS = 0.55;
@@ -20,11 +28,15 @@ const BASE_HEIGHT = 0.14;
 const ProductCan = forwardRef<THREE.Group, ProductCanProps>(({ product, isSelected = false }, ref) => {
   const labelTexture = useMemo(() => createCanLabelTexture(product), [product]);
   const condensationTexture = useMemo(() => createCondensationTexture(), []);
+  const labelRoughness = useMemo(() => createCanRoughnessTexture(), []);
+  const labelNormal = useMemo(() => createCanNormalTexture(), []);
+  const metalRoughness = useMemo(() => createMetalRoughnessTexture(), []);
+  const metalNormal = useMemo(() => createMetalNormalTexture(), []);
 
   // Build a lathe geometry for the can body with beveled top/bottom
   const bodyGeometry = useMemo(() => {
     const points: THREE.Vector2[] = [];
-    const segments = 40;
+    const segments = 64;
     const halfH = CAN_HEIGHT / 2;
 
     // Bottom to top — profile of the can body (radius at each height)
@@ -33,7 +45,7 @@ const ProductCan = forwardRef<THREE.Group, ProductCanProps>(({ product, isSelect
       const y = -halfH + t * CAN_HEIGHT;
       let r = CAN_RADIUS;
 
-      // Bottom bevel — narrower at very bottom
+      // Bottom bevel — narrower at very bottom, with a slight inward neck
       if (t < 0.04) {
         r = CAN_RADIUS * (0.93 + t * 1.75);
       }
@@ -48,117 +60,161 @@ const ProductCan = forwardRef<THREE.Group, ProductCanProps>(({ product, isSelect
         r = CAN_RADIUS * (1 - st * 0.02);
       }
 
-      points.push(new THREE.Vector2(r, y));
+      points.push(new THREE.Vector2(Math.max(0.001, r), y));
     }
 
-    const geo = new THREE.LatheGeometry(points, 64);
+    const geo = new THREE.LatheGeometry(points, 96);
     return geo;
   }, []);
 
-  // Top lid geometry — recessed with rim
+  // Top lid geometry — recessed with rim, more detailed
   const topLidGeometry = useMemo(() => {
     const points: THREE.Vector2[] = [];
-    // Recessed top: outer rim -> dip -> center
+    // Recessed top: outer rim -> dip -> center with subtle countersink
     points.push(new THREE.Vector2(CAN_RADIUS * 0.96, CAN_HEIGHT / 2));
+    points.push(new THREE.Vector2(CAN_RADIUS * 0.955, CAN_HEIGHT / 2 + 0.015));
     points.push(new THREE.Vector2(CAN_RADIUS * 0.94, CAN_HEIGHT / 2 + 0.02));
     points.push(new THREE.Vector2(CAN_RADIUS * 0.88, CAN_HEIGHT / 2 + 0.02));
-    points.push(new THREE.Vector2(CAN_RADIUS * 0.86, CAN_HEIGHT / 2 - 0.03));
-    points.push(new THREE.Vector2(CAN_RADIUS * 0.84, CAN_HEIGHT / 2 - 0.03));
-    points.push(new THREE.Vector2(0, CAN_HEIGHT / 2 - 0.03));
-    return new THREE.LatheGeometry(points, 64);
+    points.push(new THREE.Vector2(CAN_RADIUS * 0.87, CAN_HEIGHT / 2 + 0.005));
+    points.push(new THREE.Vector2(CAN_RADIUS * 0.86, CAN_HEIGHT / 2 - 0.025));
+    points.push(new THREE.Vector2(CAN_RADIUS * 0.84, CAN_HEIGHT / 2 - 0.035));
+    points.push(new THREE.Vector2(CAN_RADIUS * 0.78, CAN_HEIGHT / 2 - 0.035));
+    points.push(new THREE.Vector2(0, CAN_HEIGHT / 2 - 0.035));
+    return new THREE.LatheGeometry(points, 96);
   }, []);
 
-  // Bottom — concave
+  // Bottom — concave with more detail
   const bottomGeometry = useMemo(() => {
     const points: THREE.Vector2[] = [];
-    points.push(new THREE.Vector2(0, -CAN_HEIGHT / 2 + 0.04));
-    points.push(new THREE.Vector2(CAN_RADIUS * 0.82, -CAN_HEIGHT / 2 + 0.04));
-    points.push(new THREE.Vector2(CAN_RADIUS * 0.88, -CAN_HEIGHT / 2 + 0.01));
-    points.push(new THREE.Vector2(CAN_RADIUS * 0.93, -CAN_HEIGHT / 2));
+    points.push(new THREE.Vector2(0, -CAN_HEIGHT / 2 + 0.05));
+    points.push(new THREE.Vector2(CAN_RADIUS * 0.78, -CAN_HEIGHT / 2 + 0.05));
+    points.push(new THREE.Vector2(CAN_RADIUS * 0.84, -CAN_HEIGHT / 2 + 0.02));
+    points.push(new THREE.Vector2(CAN_RADIUS * 0.88, -CAN_HEIGHT / 2 + 0.005));
+    points.push(new THREE.Vector2(CAN_RADIUS * 0.92, -CAN_HEIGHT / 2));
     points.push(new THREE.Vector2(CAN_RADIUS * 0.96, -CAN_HEIGHT / 2));
-    return new THREE.LatheGeometry(points, 64);
+    return new THREE.LatheGeometry(points, 96);
   }, []);
 
-  // Pull tab — flat oval ring sitting on top
+  // Pull tab — flat oval ring sitting on top, more realistic shape
   const pullTabGeometry = useMemo(() => {
     const shape = new THREE.Shape();
-    const tabR = CAN_RADIUS * 0.45;
-    const tabW = CAN_RADIUS * 0.12;
-    // Outer oval
-    shape.absellipse(0, 0, tabR + tabW, tabR * 0.5 + tabW, 0, Math.PI * 2, false);
+    const tabR = CAN_RADIUS * 0.42;
+    const tabW = CAN_RADIUS * 0.1;
+    // Outer oval — slightly elongated
+    shape.absellipse(0, 0, tabR + tabW, tabR * 0.48 + tabW, 0, Math.PI * 2, false);
     // Inner hole
     const hole = new THREE.Path();
-    hole.absellipse(0, 0, tabR, tabR * 0.5, 0, Math.PI * 2, false);
+    hole.absellipse(0, 0, tabR, tabR * 0.48, 0, Math.PI * 2, false);
     shape.holes.push(hole);
     return new THREE.ExtrudeGeometry(shape, {
-      depth: 0.02,
+      depth: 0.018,
       bevelEnabled: true,
-      bevelThickness: 0.005,
-      bevelSize: 0.005,
-      bevelSegments: 2,
+      bevelThickness: 0.006,
+      bevelSize: 0.006,
+      bevelSegments: 3,
     });
+  }, []);
+
+  // Tab rivet — small bump in the center of the tab
+  const tabRivetGeometry = useMemo(() => {
+    return new THREE.SphereGeometry(CAN_RADIUS * 0.06, 16, 12);
   }, []);
 
   return (
     <group ref={ref}>
-      {/* Main body with label */}
+      {/* Main body with label + condensation roughness/normal */}
       <mesh geometry={bodyGeometry} castShadow receiveShadow>
-        <meshStandardMaterial
+        <meshPhysicalMaterial
           map={labelTexture}
-          metalness={0.75}
-          roughness={0.22}
-          envMapIntensity={1.2}
+          roughnessMap={labelRoughness}
+          normalMap={labelNormal}
+          normalScale={new THREE.Vector2(0.4, 0.4)}
+          metalness={0.6}
+          roughness={0.28}
+          envMapIntensity={1.4}
+          clearcoat={0.15}
+          clearcoatRoughness={0.4}
+          emissive={new THREE.Color(product.color)}
+          emissiveIntensity={0}
         />
       </mesh>
 
-      {/* Condensation overlay — only on selected can, stronger */}
-      {isSelected && (
-        <mesh geometry={bodyGeometry}>
-          <meshStandardMaterial
-            map={condensationTexture}
-            transparent
-            opacity={0.35}
-            metalness={0.1}
-            roughness={0.6}
-            depthWrite={false}
-            polygonOffset
-            polygonOffsetFactor={-1}
-          />
-        </mesh>
-      )}
+      {/* Condensation overlay — always present, stronger when selected */}
+      <mesh geometry={bodyGeometry}>
+        <meshPhysicalMaterial
+          map={condensationTexture}
+          transparent
+          opacity={isSelected ? 0.45 : 0.28}
+          metalness={0.05}
+          roughness={0.5}
+          depthWrite={false}
+          polygonOffset
+          polygonOffsetFactor={-1}
+          clearcoat={0.8}
+          clearcoatRoughness={0.1}
+          envMapIntensity={1.8}
+        />
+      </mesh>
 
-      {/* Top lid — recessed aluminum */}
+      {/* Top lid — recessed aluminum with detailed metal textures */}
       <mesh geometry={topLidGeometry} castShadow>
-        <meshStandardMaterial
+        <meshPhysicalMaterial
           color={METAL_COLOR}
-          metalness={0.95}
-          roughness={0.18}
-          envMapIntensity={1.5}
+          roughnessMap={metalRoughness}
+          normalMap={metalNormal}
+          normalScale={new THREE.Vector2(0.3, 0.3)}
+          metalness={0.96}
+          roughness={0.16}
+          envMapIntensity={1.8}
+          clearcoat={0.3}
+          clearcoatRoughness={0.3}
         />
       </mesh>
 
       {/* Pull tab */}
       <mesh
         geometry={pullTabGeometry}
-        position={[0, CAN_HEIGHT / 2 - 0.01, 0]}
+        position={[0, CAN_HEIGHT / 2 - 0.008, 0]}
         rotation={[-Math.PI / 2, 0, 0.3]}
         castShadow
       >
-        <meshStandardMaterial
-          color={METAL_COLOR}
+        <meshPhysicalMaterial
+          color={METAL_BRIGHT}
+          roughnessMap={metalRoughness}
           metalness={0.98}
-          roughness={0.15}
-          envMapIntensity={1.5}
+          roughness={0.14}
+          envMapIntensity={2.0}
+          clearcoat={0.4}
+          clearcoatRoughness={0.2}
+        />
+      </mesh>
+
+      {/* Tab rivet */}
+      <mesh
+        geometry={tabRivetGeometry}
+        position={[0, CAN_HEIGHT / 2 - 0.012, 0]}
+        castShadow
+      >
+        <meshPhysicalMaterial
+          color={METAL_BRIGHT}
+          metalness={0.98}
+          roughness={0.12}
+          envMapIntensity={2.0}
         />
       </mesh>
 
       {/* Bottom — concave aluminum */}
-      <mesh geometry={bottomGeometry} castShadow>
-        <meshStandardMaterial
+      <mesh geometry={bottomGeometry} castShadow receiveShadow>
+        <meshPhysicalMaterial
           color={METAL_DARK}
-          metalness={0.9}
-          roughness={0.3}
-          envMapIntensity={1.0}
+          roughnessMap={metalRoughness}
+          normalMap={metalNormal}
+          normalScale={new THREE.Vector2(0.25, 0.25)}
+          metalness={0.92}
+          roughness={0.28}
+          envMapIntensity={1.2}
+          clearcoat={0.2}
+          clearcoatRoughness={0.35}
         />
       </mesh>
     </group>

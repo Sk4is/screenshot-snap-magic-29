@@ -179,6 +179,72 @@ function drawRecycle(ctx: CanvasRenderingContext2D, x: number, y: number, r: num
   ctx.restore();
 }
 
+/* small line icons for the can label */
+function drawZeroSugarIcon(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, color: string) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.arc(x, y, s, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x - s * 0.5, y - s * 0.5);
+  ctx.lineTo(x + s * 0.5, y + s * 0.5);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawCaffeineIcon(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, color: string) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(x, y - s);
+  ctx.lineTo(x, y + s);
+  ctx.moveTo(x - s * 0.4, y - s * 0.6);
+  ctx.lineTo(x - s * 0.4, y + s * 0.6);
+  ctx.moveTo(x + s * 0.4, y - s * 0.6);
+  ctx.lineTo(x + s * 0.4, y + s * 0.6);
+  ctx.moveTo(x - s * 0.65, y - s);
+  ctx.lineTo(x + s * 0.65, y - s);
+  ctx.moveTo(x - s * 0.65, y + s);
+  ctx.lineTo(x + s * 0.65, y + s);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawSparkleIcon(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, color: string) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2 - Math.PI / 2;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + Math.cos(a) * s, y + Math.sin(a) * s);
+    ctx.stroke();
+  }
+  ctx.beginPath();
+  ctx.arc(x, y, s * 0.15, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawLightningIcon(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, color: string) {
+  ctx.save();
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(x - s * 0.2, y - s);
+  ctx.lineTo(x + s * 0.4, y - s * 0.1);
+  ctx.lineTo(x, y - s * 0.1);
+  ctx.lineTo(x + s * 0.2, y + s);
+  ctx.lineTo(x - s * 0.4, y + s * 0.1);
+  ctx.lineTo(x, y + s * 0.1);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
 /* ------------------------------------------------------------------ */
 /* main label                                                          */
 /* ------------------------------------------------------------------ */
@@ -265,26 +331,45 @@ export function createCanLabelTexture(product: Product): THREE.CanvasTexture {
     ctx.font = '700 48px "Space Grotesk", sans-serif';
     ctx.fillText('500 ml', cx, H * 0.805);
 
-    // nutrition highlight chips
-    const chips = [`0g SUGAR`, `${product.caffeineMg}mg NATURAL CAFFEINE`, 'SPARKLING WATER'];
+    // nutrition highlight chips with icons
+    const chips = [`0g SUGAR`, `${product.caffeineMg}mg CAFFEINE`, 'SPARKLING WATER'];
+    const chipIcons = [
+      (cx2: number, cy2: number) => drawZeroSugarIcon(ctx, cx2, cy2, 11, inkSoft),
+      (cx2: number, cy2: number) => drawCaffeineIcon(ctx, cx2, cy2, 11, inkSoft),
+      (cx2: number, cy2: number) => drawSparkleIcon(ctx, cx2, cy2, 11, inkSoft),
+    ];
     ctx.font = '700 24px "Space Grotesk", sans-serif';
-    let chipX = cx - 300;
-    chips.forEach((c) => {
-      const w = ctx.measureText(c).width + 34;
+    let chipX = cx - 310;
+    chips.forEach((c, ci) => {
+      const w = ctx.measureText(c).width + 56;
       ctx.strokeStyle = inkFaint;
       ctx.lineWidth = 2;
       ctx.strokeRect(chipX, H * 0.845, w, 46);
+      chipIcons[ci]!(chipX + 24, H * 0.868);
       ctx.fillStyle = inkSoft;
       ctx.textAlign = 'left';
-      ctx.fillText(c, chipX + 17, H * 0.868);
+      ctx.fillText(c, chipX + 44, H * 0.868);
       ctx.textAlign = 'center';
-      chipX += w + 16;
+      chipX += w + 14;
     });
 
     // keywords row
     ctx.fillStyle = inkFaint;
     ctx.font = '600 22px "Space Grotesk", sans-serif';
     ctx.fillText(product.keywords.join('  ·  ').toUpperCase(), cx, H * 0.925);
+
+    // nutritional microtext block
+    ctx.font = '400 13px "Space Grotesk", sans-serif';
+    ctx.fillStyle = inkFaint;
+    ctx.textAlign = 'left';
+    const nutrition = [
+      'NUTRITION FACTS  ·  Serving size 250ml  ·  Servings per can 2',
+      'Energy  4kJ / 1kcal  ·  Fat 0g  ·  Carbs 0g  ·  Sugars 0g',
+      `Caffeine ${product.caffeineMg}mg  ·  Sodium 12mg  ·  Vitamin B6 1.4mg  ·  B12 0.8µg`,
+      'Niacin 8mg  ·  Pantothenic Acid 3mg  ·  Biotin 15µg',
+    ];
+    nutrition.forEach((line, i) => ctx.fillText(line, cx - PANEL * 0.42, H * 0.955 + i * 17));
+    ctx.textAlign = 'center';
 
     // legal micro print
     ctx.font = '400 15px "Space Grotesk", sans-serif';
@@ -309,6 +394,9 @@ export function createCanLabelTexture(product: Product): THREE.CanvasTexture {
     ctx.font = '600 18px "Space Grotesk", sans-serif';
     ctx.fillText('ALU', cx - PANEL * 0.4, H * 0.905);
     ctx.restore();
+
+    // small lightning bolt accent near the flavor name
+    drawLightningIcon(ctx, cx + ctx.measureText(product.name.toUpperCase()).width / 2 + 30, H * 0.68, 16, product.accent);
   }
 
   // printed micro-scratches / plate texture across the whole wrap
@@ -486,6 +574,96 @@ export function createCanNormalTexture(): THREE.CanvasTexture {
     ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
     ctx.fill();
   }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.anisotropy = 8;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+/* ------------------------------------------------------------------ */
+/* metal surface textures for lid, tab, bottom                        */
+/* ------------------------------------------------------------------ */
+const METAL_SIZE = 512;
+
+/** brushed aluminum roughness — anisotropic streaks + subtle variation */
+export function createMetalRoughnessTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = METAL_SIZE;
+  canvas.height = METAL_SIZE;
+  const ctx = canvas.getContext('2d')!;
+  // base roughness
+  ctx.fillStyle = '#a0a0a4';
+  ctx.fillRect(0, 0, METAL_SIZE, METAL_SIZE);
+
+  const rand = rng(777);
+  // brushed circular streaks radiating from center
+  ctx.globalAlpha = 0.18;
+  for (let i = 0; i < 1800; i++) {
+    const angle = rand() * Math.PI * 2;
+    const r = rand() * METAL_SIZE * 0.55;
+    const len = 20 + rand() * 80;
+    const x1 = METAL_SIZE / 2 + Math.cos(angle) * r;
+    const y1 = METAL_SIZE / 2 + Math.sin(angle) * r;
+    const x2 = METAL_SIZE / 2 + Math.cos(angle) * (r + len);
+    const y2 = METAL_SIZE / 2 + Math.sin(angle) * (r + len);
+    ctx.strokeStyle = rand() > 0.5 ? '#b0b0b4' : '#8a8a8e';
+    ctx.lineWidth = 0.5 + rand() * 1.2;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+  }
+  // fine grain noise
+  ctx.globalAlpha = 0.12;
+  for (let i = 0; i < 3000; i++) {
+    ctx.fillStyle = rand() > 0.5 ? '#c0c0c4' : '#787880';
+    ctx.fillRect(rand() * METAL_SIZE, rand() * METAL_SIZE, 1, 1);
+  }
+  ctx.globalAlpha = 1;
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.anisotropy = 8;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+/** normal map for brushed aluminum — subtle radial relief */
+export function createMetalNormalTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = METAL_SIZE;
+  canvas.height = METAL_SIZE;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#8080ff';
+  ctx.fillRect(0, 0, METAL_SIZE, METAL_SIZE);
+
+  const rand = rng(888);
+  // radial brush marks
+  ctx.globalAlpha = 0.08;
+  for (let i = 0; i < 900; i++) {
+    const angle = rand() * Math.PI * 2;
+    const r = rand() * METAL_SIZE * 0.5;
+    const len = 15 + rand() * 60;
+    const x1 = METAL_SIZE / 2 + Math.cos(angle) * r;
+    const y1 = METAL_SIZE / 2 + Math.sin(angle) * r;
+    const x2 = METAL_SIZE / 2 + Math.cos(angle) * (r + len);
+    const y2 = METAL_SIZE / 2 + Math.sin(angle) * (r + len);
+    const grad = ctx.createLinearGradient(x1, y1, x2, y2);
+    grad.addColorStop(0, 'rgba(120,120,255,0.6)');
+    grad.addColorStop(0.5, 'rgba(128,128,255,0)');
+    grad.addColorStop(1, 'rgba(140,140,255,0.6)');
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.wrapS = THREE.RepeatWrapping;
